@@ -14,10 +14,17 @@ chronos demo --workers 5
 chronos history run_001
 chronos replay run_001
 
-# Fork an isolated timeline from an earlier checkpoint and diff the two runs
+# Fork an isolated timeline from an earlier checkpoint, diff, and inspect lineage
 chronos fork run_001 --checkpoint 3 --override task.key=value
 chronos diff run_001 run_002
+chronos branches
 ```
+
+## Measured Local Performance (Apple M5, darwin/arm64)
+
+- **Pure Engine (`BenchmarkSchedule100TaskDAG`):** 100-task DAG scheduled and folded in `1.14ms`–`2.02ms` (`~11–20 µs/task`).
+- **Real SQLite WAL (`BenchmarkSQLiteWALDispatchAndComplete`, 200x):** `0.118 ms` p50, **`0.313 ms` p95**, `0.455 ms` p99 per lease + WAL commit + complete + checkpoint WAL cycle.
+- **Worker `SIGKILL` Recovery (`TestE2EWorkerSIGKILLRecoveryUnder5Seconds`):** Real OS child worker killed via `SIGKILL`, detected and recovered under `<5s` (`1s` heartbeat, `3s` lease TTL, `250ms` reaper tick).
 
 ## Execution Guarantees
 

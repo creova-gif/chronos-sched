@@ -24,6 +24,7 @@ import (
 
 	"github.com/creova-gif/chronos-sched/internal/engine"
 	"github.com/creova-gif/chronos-sched/internal/runtime"
+	"github.com/creova-gif/chronos-sched/internal/store"
 	"github.com/creova-gif/chronos-sched/internal/store/sqlite"
 	"github.com/creova-gif/chronos-sched/internal/tui"
 )
@@ -84,6 +85,8 @@ func run(args []string) error {
 		return cmdFork(args[1:])
 	case "diff":
 		return cmdDiff(args[1:])
+	case "branches":
+		return cmdBranches(args[1:])
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -106,6 +109,7 @@ Usage:
   chronos replay <run_id> [--dry-run] [--db .chronos/chronos.db]
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
+  chronos branches [--db .chronos/chronos.db]
 `)
 }
 
@@ -286,6 +290,27 @@ func cmdDemo(args []string) error {
 			}
 			return resp.RunID, nil
 		},
+		OnForkWithOverride: func(runID string, cpNum int, override string) (string, error) {
+			var overrides map[string]map[string]any
+			if strings.TrimSpace(override) != "" {
+				var err error
+				overrides, err = parseOverrides([]string{strings.TrimSpace(override)})
+				if err != nil {
+					return "", err
+				}
+			}
+			resp, err := coord.ForkRun(ctx, runID, runtime.ForkRunRequest{
+				Checkpoint: strconv.Itoa(cpNum),
+				Overrides:  overrides,
+			})
+			if err != nil {
+				return "", err
+			}
+			return resp.RunID, nil
+		},
+		OnReplay: func(runID string) (string, error) {
+			return replayRunFromStore(ctx, st, runID)
+		},
 		OnDiff: func(runA, runB string) (string, error) {
 			return diffRunsFromStore(ctx, st, runA, runB)
 		},
@@ -442,10 +467,59 @@ func cmdWorkflowInspect(args []string) error {
 		return nil
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var evMu sync.Mutex
+	var liveEvents []engine.Event
+	sseCh := make(chan runtime.SSEMessage, 256)
+	go func() {
+		_ = tui.StreamEvents(ctx, *coordURL+"/v1/runs/"+runID+"/events", sseCh)
+	}()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg := <-sseCh:
+				evMu.Lock()
+				liveEvents = append(liveEvents, msg.Event)
+				evMu.Unlock()
+			}
+		}
+	}()
+
 	model := tui.NewModel(tui.Config{
 		RunID:     runID,
 		AllowKill: false, // Read-only live inspector per M1 design
-		Fetch:     fetchSnap,
+		Fetch: func(id string) (runtime.RunSnapshotResponse, []engine.Event, error) {
+			snap, _, err := fetchSnap(id)
+			if err != nil {
+				return runtime.RunSnapshotResponse{}, nil, err
+			}
+			evMu.Lock()
+			evsCopy := append([]engine.Event(nil), liveEvents...)
+			evMu.Unlock()
+			return snap, evsCopy, nil
+		},
+		OnForkWithOverride: func(parentID string, cpNum int, override string) (string, error) {
+			var overrides map[string]map[string]any
+			if strings.TrimSpace(override) != "" {
+				var err error
+				overrides, err = parseOverrides([]string{strings.TrimSpace(override)})
+				if err != nil {
+					return "", err
+				}
+			}
+			var resp runtime.ForkRunResponse
+			if err := rpcPost(*coordURL+"/v1/runs/"+parentID+"/fork", runtime.ForkRunRequest{
+				Checkpoint: strconv.Itoa(cpNum),
+				Overrides:  overrides,
+			}, &resp); err != nil {
+				return "", err
+			}
+			return resp.RunID, nil
+		},
 	})
 	_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 	return err
@@ -497,25 +571,52 @@ func cmdReplay(args []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	ctx := context.Background()
-	rec, err := st.GetRun(ctx, runID)
+	out, err := replayRunFromStore(context.Background(), st, runID)
 	if err != nil {
 		return err
+	}
+	fmt.Println(out)
+	return nil
+}
+
+func replayRunFromStore(ctx context.Context, st *sqlite.Store, runID string) (string, error) {
+	rec, err := st.GetRun(ctx, runID)
+	if err != nil {
+		return "", err
 	}
 	dag, err := engine.ParseDAG([]byte(rec.WorkflowYAML))
 	if err != nil {
-		return err
+		return "", err
 	}
 	evs, err := st.LoadRunEvents(ctx, runID)
 	if err != nil {
-		return err
+		return "", err
 	}
 	rep, err := engine.VerifyReplay(dag, evs)
 	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Replay OK (side-effect-free): run=%s status=%s events=%d tasks=%d/%d checkpoints=%d ambiguous=%d",
+		rep.RunID, rep.FinalStatus, rep.EventsReplayed, rep.CompletedTasks, rep.TotalTasks, rep.Checkpoints, rep.AmbiguousEvents), nil
+}
+
+func cmdBranches(args []string) error {
+	fs := flag.NewFlagSet("branches", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
 		return err
 	}
-	fmt.Printf("Replay OK (side-effect-free): run=%s status=%s events=%d tasks=%d/%d checkpoints=%d ambiguous=%d\n",
-		rep.RunID, rep.FinalStatus, rep.EventsReplayed, rep.CompletedTasks, rep.TotalTasks, rep.Checkpoints, rep.AmbiguousEvents)
+	st, err := sqlite.OpenReadOnly(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	runs, err := st.ListRuns(context.Background())
+	if err != nil {
+		return err
+	}
+	fmt.Println(store.FormatBranchTree(runs))
 	return nil
 }
 

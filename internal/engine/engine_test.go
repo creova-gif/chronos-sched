@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -72,6 +73,21 @@ func TestParseDAGValidation(t *testing.T) {
 			name:    "duplicate checkpoint_name",
 			yaml:    "name: dupcp\ntasks:\n  - id: a\n    handler: sim\n    checkpoint_name: cp1\n  - id: b\n    handler: sim\n    checkpoint_name: cp1\n",
 			wantErr: "duplicate checkpoint_name",
+		},
+		{
+			name:    "negative resource value",
+			yaml:    "name: negres\ntasks:\n  - id: a\n    handler: sim\n    resources:\n      cpu: -1\n",
+			wantErr: "negative resource",
+		},
+		{
+			name:    "negative deadline_ms",
+			yaml:    "name: negdl\ntasks:\n  - id: a\n    handler: sim\n    deadline_ms: -10\n",
+			wantErr: "negative deadline_ms",
+		},
+		{
+			name:    "negative retry_backoff_ms",
+			yaml:    "name: negbo\ntasks:\n  - id: a\n    handler: sim\n    retry_backoff_ms: -5\n",
+			wantErr: "negative retry_backoff_ms",
 		},
 	}
 
@@ -359,5 +375,342 @@ func TestDeterministic100TaskDAGReplay(t *testing.T) {
 	}
 	if rep.FinalStatus != engine.RunStatusCompleted || rep.CompletedTasks != 100 || rep.Checkpoints != 100 {
 		t.Fatalf("unexpected 100-task replay report: %+v", rep)
+	}
+}
+
+func TestResourceConstrainedLeasing(t *testing.T) {
+	t.Parallel()
+
+	const yamlSpec = `
+name: resource-constrained
+tasks:
+  - id: heavy
+    handler: sim
+    priority: 10
+    resources:
+      cpu: 4
+  - id: light
+    handler: sim
+    priority: 5
+    resources:
+      cpu: 2
+`
+	dag, err := engine.ParseDAG([]byte(yamlSpec))
+	if err != nil {
+		t.Fatalf("ParseDAG: %v", err)
+	}
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	state := engine.NewRunState(dag, "run_res")
+	var journal []engine.Event
+
+	applyStep := func(cmd engine.Command, ts time.Time) []engine.Event {
+		evs, _, err := engine.Step(dag, state, cmd, ts)
+		if err != nil {
+			t.Fatalf("Step(%T): %v", cmd, err)
+		}
+		for _, ev := range evs {
+			if err := engine.Apply(state, ev); err != nil {
+				t.Fatalf("Apply(%s): %v", ev.Type, err)
+			}
+			journal = append(journal, ev)
+		}
+		return evs
+	}
+
+	applyStep(engine.CmdStartRun{RunID: "run_res"}, now)
+
+	// Worker with cpu=2 cannot lease heavy (cpu=4), so it leases light (cpu=2).
+	evs := applyStep(engine.CmdLeaseNextTask{
+		WorkerID:           "w-small",
+		AvailableResources: map[string]int{"cpu": 2},
+	}, now.Add(10*time.Millisecond))
+	if len(evs) != 1 || evs[0].TaskID != "light" {
+		t.Fatalf("expected worker with cpu=2 to lease light, got %+v", evs)
+	}
+
+	// Only heavy remains pending; worker with cpu=2 cannot lease it.
+	evs = applyStep(engine.CmdLeaseNextTask{
+		WorkerID:           "w-small-2",
+		AvailableResources: map[string]int{"cpu": 2},
+	}, now.Add(20*time.Millisecond))
+	if len(evs) != 0 {
+		t.Fatalf("expected worker with cpu=2 to get no task when only cpu=4 remains, got %+v", evs)
+	}
+
+	// Worker with cpu=4 can lease heavy.
+	evs = applyStep(engine.CmdLeaseNextTask{
+		WorkerID:           "w-large",
+		AvailableResources: map[string]int{"cpu": 4},
+	}, now.Add(30*time.Millisecond))
+	if len(evs) != 1 || evs[0].TaskID != "heavy" {
+		t.Fatalf("expected worker with cpu=4 to lease heavy, got %+v", evs)
+	}
+
+	if _, err := engine.VerifyReplay(dag, journal); err != nil {
+		t.Fatalf("VerifyReplay: %v", err)
+	}
+
+	// Backward compatibility: nil AvailableResources is unconstrained and leases highest-priority heavy.
+	stateUnconstrained := engine.NewRunState(dag, "run_unconstrained")
+	startEvs, _, err := engine.Step(dag, stateUnconstrained, engine.CmdStartRun{RunID: "run_unconstrained"}, now)
+	if err != nil {
+		t.Fatalf("start unconstrained: %v", err)
+	}
+	if err := engine.Apply(stateUnconstrained, startEvs[0]); err != nil {
+		t.Fatalf("apply start: %v", err)
+	}
+	unconstrainedEvs, _, err := engine.Step(dag, stateUnconstrained, engine.CmdLeaseNextTask{WorkerID: "w-legacy"}, now.Add(10*time.Millisecond))
+	if err != nil || len(unconstrainedEvs) != 1 || unconstrainedEvs[0].TaskID != "heavy" {
+		t.Fatalf("expected unconstrained worker to lease heavy, got %+v err=%v", unconstrainedEvs, err)
+	}
+}
+
+func TestExponentialRetryBackoff(t *testing.T) {
+	t.Parallel()
+
+	const yamlSpec = `
+name: backoff-pipeline
+tasks:
+  - id: flaky
+    handler: sim
+    max_retries: 2
+    retry_backoff_ms: 1000
+`
+	dag, err := engine.ParseDAG([]byte(yamlSpec))
+	if err != nil {
+		t.Fatalf("ParseDAG: %v", err)
+	}
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	state := engine.NewRunState(dag, "run_backoff")
+	var journal []engine.Event
+
+	applyStep := func(cmd engine.Command, ts time.Time) []engine.Event {
+		evs, _, err := engine.Step(dag, state, cmd, ts)
+		if err != nil {
+			t.Fatalf("Step(%T): %v", cmd, err)
+		}
+		for _, ev := range evs {
+			if err := engine.Apply(state, ev); err != nil {
+				t.Fatalf("Apply(%s): %v", ev.Type, err)
+			}
+			journal = append(journal, ev)
+		}
+		return evs
+	}
+
+	applyStep(engine.CmdStartRun{RunID: "run_backoff"}, now)
+
+	// Attempt 1 leased at t=0, fails at t=100ms -> backoff = 1000ms * 2^0 = 1000ms (retry after t=1100ms).
+	evs := applyStep(engine.CmdLeaseNextTask{WorkerID: "w-1"}, now)
+	if len(evs) != 1 || evs[0].Attempt != 1 || evs[0].FencingToken != 1 {
+		t.Fatalf("unexpected attempt 1 lease: %+v", evs)
+	}
+	applyStep(engine.CmdFailTask{TaskID: "flaky", WorkerID: "w-1", FencingToken: 1, ErrMsg: "boom-1"}, now.Add(100*time.Millisecond))
+
+	wantRetryAfter1 := now.Add(1100 * time.Millisecond).UnixNano()
+	if state.Tasks["flaky"].RetryAfterNs != wantRetryAfter1 {
+		t.Fatalf("expected RetryAfterNs=%d, got %d", wantRetryAfter1, state.Tasks["flaky"].RetryAfterNs)
+	}
+
+	// Polling before backoff elapses (t=1099ms) must not lease the task.
+	if early := applyStep(engine.CmdLeaseNextTask{WorkerID: "w-2"}, now.Add(1099*time.Millisecond)); len(early) != 0 {
+		t.Fatalf("expected backoff to block early re-lease, got %+v", early)
+	}
+
+	// Polling at t=1100ms leases attempt 2.
+	evs = applyStep(engine.CmdLeaseNextTask{WorkerID: "w-2"}, now.Add(1100*time.Millisecond))
+	if len(evs) != 1 || evs[0].Attempt != 2 || evs[0].FencingToken != 2 {
+		t.Fatalf("expected attempt 2 lease at t=1100ms, got %+v", evs)
+	}
+
+	// Attempt 2 fails at t=1200ms -> backoff = 1000ms * 2^1 = 2000ms (retry after t=3200ms).
+	applyStep(engine.CmdFailTask{TaskID: "flaky", WorkerID: "w-2", FencingToken: 2, ErrMsg: "boom-2"}, now.Add(1200*time.Millisecond))
+	wantRetryAfter2 := now.Add(3200 * time.Millisecond).UnixNano()
+	if state.Tasks["flaky"].RetryAfterNs != wantRetryAfter2 {
+		t.Fatalf("expected RetryAfterNs=%d, got %d", wantRetryAfter2, state.Tasks["flaky"].RetryAfterNs)
+	}
+
+	if early := applyStep(engine.CmdLeaseNextTask{WorkerID: "w-3"}, now.Add(3199*time.Millisecond)); len(early) != 0 {
+		t.Fatalf("expected 2x backoff to block early re-lease, got %+v", early)
+	}
+
+	evs = applyStep(engine.CmdLeaseNextTask{WorkerID: "w-3"}, now.Add(3200*time.Millisecond))
+	if len(evs) != 1 || evs[0].Attempt != 3 || evs[0].FencingToken != 3 {
+		t.Fatalf("expected attempt 3 lease at t=3200ms, got %+v", evs)
+	}
+
+	if _, err := engine.VerifyReplay(dag, journal); err != nil {
+		t.Fatalf("VerifyReplay: %v", err)
+	}
+}
+
+func TestTaskDeadlineEnforcement(t *testing.T) {
+	t.Parallel()
+
+	const yamlSpec = `
+name: deadline-pipeline
+tasks:
+  - id: slow_task
+    handler: sim
+    max_retries: 1
+    deadline_ms: 1000
+`
+	dag, err := engine.ParseDAG([]byte(yamlSpec))
+	if err != nil {
+		t.Fatalf("ParseDAG: %v", err)
+	}
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	state := engine.NewRunState(dag, "run_deadline")
+	var journal []engine.Event
+
+	applyStep := func(cmd engine.Command, ts time.Time) []engine.Event {
+		evs, _, err := engine.Step(dag, state, cmd, ts)
+		if err != nil {
+			t.Fatalf("Step(%T): %v", cmd, err)
+		}
+		for _, ev := range evs {
+			if err := engine.Apply(state, ev); err != nil {
+				t.Fatalf("Apply(%s): %v", ev.Type, err)
+			}
+			journal = append(journal, ev)
+		}
+		return evs
+	}
+
+	applyStep(engine.CmdStartRun{RunID: "run_deadline"}, now)
+	// Lease with a long 10s TTL so only the 1000ms task deadline can trigger expiry.
+	applyStep(engine.CmdLeaseNextTask{WorkerID: "w-1", LeaseTTL: 10 * time.Second}, now)
+	applyStep(engine.CmdMarkTaskStarted{TaskID: "slow_task", WorkerID: "w-1", FencingToken: 1}, now.Add(100*time.Millisecond))
+
+	// Before deadline (999ms): should not expire.
+	if evs := applyStep(engine.CmdExpireLeases{}, now.Add(999*time.Millisecond)); len(evs) != 0 {
+		t.Fatalf("expected no expiry before deadline, got %+v", evs)
+	}
+
+	// At deadline (1000ms): must expire with "task deadline exceeded" and TASK_OUTCOME_AMBIGUOUS.
+	expiredEvs := applyStep(engine.CmdExpireLeases{}, now.Add(1000*time.Millisecond))
+	if len(expiredEvs) != 2 || expiredEvs[0].Type != engine.EventLeaseExpired || expiredEvs[1].Type != engine.EventTaskOutcomeAmbiguous {
+		t.Fatalf("expected LEASE_EXPIRED + TASK_OUTCOME_AMBIGUOUS, got %+v", expiredEvs)
+	}
+	var payload engine.LeaseExpiredPayload
+	if err := json.Unmarshal(expiredEvs[0].Payload, &payload); err != nil {
+		t.Fatalf("unmarshal LeaseExpiredPayload: %v", err)
+	}
+	if payload.Reason != "task deadline exceeded" || !payload.WillRetry {
+		t.Fatalf("unexpected LeaseExpiredPayload: %+v", payload)
+	}
+	if state.Tasks["slow_task"].AmbiguousCount != 1 || state.Tasks["slow_task"].Status != engine.TaskStatusPending {
+		t.Fatalf("unexpected task state after deadline expiry: %+v", state.Tasks["slow_task"])
+	}
+
+	rep, err := engine.VerifyReplay(dag, journal)
+	if err != nil {
+		t.Fatalf("VerifyReplay: %v", err)
+	}
+	if rep.AmbiguousEvents != 1 {
+		t.Fatalf("expected 1 ambiguous event in replay report, got %+v", rep)
+	}
+}
+
+func TestVerifyReplayRejectsDependencyViolationAndNonIncreasingFencingToken(t *testing.T) {
+	t.Parallel()
+
+	dag, err := engine.ParseDAG([]byte(sampleWorkflowYAML))
+	if err != nil {
+		t.Fatalf("ParseDAG: %v", err)
+	}
+
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	startPayload, err := json.Marshal(engine.RunStartedPayload{
+		WorkflowName: dag.Spec.Name,
+		WorkflowHash: dag.WorkflowHash,
+	})
+	if err != nil {
+		t.Fatalf("marshal start: %v", err)
+	}
+	leasePayload, err := json.Marshal(engine.TaskLeasedPayload{
+		LeaseExpiresAtNs: now.Add(3 * time.Second).UnixNano(),
+	})
+	if err != nil {
+		t.Fatalf("marshal lease: %v", err)
+	}
+
+	// Corrupted stream 1: "transform" (depends on "fetch") leased before "fetch" completed.
+	depViolationEvents := []engine.Event{
+		{
+			RunID:       "run_corrupt_dep",
+			Seq:         1,
+			TimestampNs: now.UnixNano(),
+			Type:        engine.EventRunStarted,
+			Payload:     startPayload,
+		},
+		{
+			RunID:        "run_corrupt_dep",
+			Seq:          2,
+			TimestampNs:  now.Add(10 * time.Millisecond).UnixNano(),
+			Type:         engine.EventTaskLeased,
+			TaskID:       "transform",
+			Attempt:      1,
+			FencingToken: 1,
+			WorkerID:     "w-1",
+			Payload:      leasePayload,
+		},
+	}
+	if _, err := engine.VerifyReplay(dag, depViolationEvents); err == nil || !strings.Contains(err.Error(), "dependency violation") {
+		t.Fatalf("expected VerifyReplay dependency violation error, got %v", err)
+	}
+
+	// Corrupted stream 2: fencing_token is not strictly increasing across TASK_LEASED events.
+	completePayload, err := json.Marshal(engine.TaskCompletedPayload{Output: map[string]any{"ok": true}})
+	if err != nil {
+		t.Fatalf("marshal complete: %v", err)
+	}
+	nonIncreasingTokenEvents := []engine.Event{
+		{
+			RunID:       "run_corrupt_tok",
+			Seq:         1,
+			TimestampNs: now.UnixNano(),
+			Type:        engine.EventRunStarted,
+			Payload:     startPayload,
+		},
+		{
+			RunID:        "run_corrupt_tok",
+			Seq:          2,
+			TimestampNs:  now.Add(10 * time.Millisecond).UnixNano(),
+			Type:         engine.EventTaskLeased,
+			TaskID:       "fetch",
+			Attempt:      1,
+			FencingToken: 2,
+			WorkerID:     "w-1",
+			Payload:      leasePayload,
+		},
+		{
+			RunID:        "run_corrupt_tok",
+			Seq:          3,
+			TimestampNs:  now.Add(20 * time.Millisecond).UnixNano(),
+			Type:         engine.EventTaskCompleted,
+			TaskID:       "fetch",
+			Attempt:      1,
+			FencingToken: 2,
+			WorkerID:     "w-1",
+			Payload:      completePayload,
+		},
+		{
+			RunID:        "run_corrupt_tok",
+			Seq:          4,
+			TimestampNs:  now.Add(30 * time.Millisecond).UnixNano(),
+			Type:         engine.EventTaskLeased,
+			TaskID:       "transform",
+			Attempt:      1,
+			FencingToken: 2, // non-increasing!
+			WorkerID:     "w-2",
+			Payload:      leasePayload,
+		},
+	}
+	if _, err := engine.VerifyReplay(dag, nonIncreasingTokenEvents); err == nil || !strings.Contains(err.Error(), "non-increasing fencing_token") {
+		t.Fatalf("expected VerifyReplay non-increasing fencing_token error, got %v", err)
 	}
 }

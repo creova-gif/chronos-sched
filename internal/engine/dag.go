@@ -50,6 +50,20 @@ func BuildDAG(spec WorkflowSpec, rawSource []byte) (*DAG, error) {
 		if t.TimeoutMs < 0 {
 			return nil, fmt.Errorf("task %q has negative timeout_ms %d", t.ID, t.TimeoutMs)
 		}
+		if t.DeadlineMs < 0 {
+			return nil, fmt.Errorf("task %q has negative deadline_ms %d", t.ID, t.DeadlineMs)
+		}
+		if t.RetryBackoffMs < 0 {
+			return nil, fmt.Errorf("task %q has negative retry_backoff_ms %d", t.ID, t.RetryBackoffMs)
+		}
+		for resName, amount := range t.Resources {
+			if resName == "" {
+				return nil, fmt.Errorf("task %q has empty resource name", t.ID)
+			}
+			if amount < 0 {
+				return nil, fmt.Errorf("task %q has negative resource %q value %d", t.ID, resName, amount)
+			}
+		}
 		if _, exists := tasksByID[t.ID]; exists {
 			return nil, fmt.Errorf("duplicate task id %q", t.ID)
 		}

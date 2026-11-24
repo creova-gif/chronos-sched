@@ -40,12 +40,47 @@ type ReplayReport struct {
 
 // VerifyReplay reconstructs a run purely from its recorded event journal without
 // executing any task handlers or external side effects, verifying monotonic
-// sequence integrity and state consistency.
+// sequence integrity, dependency ordering on leases, strictly increasing fencing
+// tokens, and state consistency.
 func VerifyReplay(dag *DAG, events []Event) (*ReplayReport, error) {
-	state, err := Fold(dag, events)
-	if err != nil {
-		return nil, err
+	if len(events) == 0 {
+		return nil, fmt.Errorf("cannot fold empty event stream")
 	}
+	runID := events[len(events)-1].RunID
+	state := NewRunState(dag, runID)
+	var lastLeaseFencingToken int64
+
+	for i, ev := range events {
+		expectedSeq := int64(i + 1)
+		if ev.Seq != expectedSeq {
+			return nil, fmt.Errorf("non-monotonic event seq at index %d: got %d, expected %d", i, ev.Seq, expectedSeq)
+		}
+		if ev.Type == EventTaskLeased {
+			if ev.FencingToken <= lastLeaseFencingToken {
+				return nil, fmt.Errorf("non-increasing fencing_token on TASK_LEASED at seq=%d task=%s: got %d, previous %d", ev.Seq, ev.TaskID, ev.FencingToken, lastLeaseFencingToken)
+			}
+			lastLeaseFencingToken = ev.FencingToken
+
+			spec, ok := dag.TasksByID[ev.TaskID]
+			if !ok {
+				return nil, fmt.Errorf("apply event seq=%d type=%s: %w: %s", ev.Seq, ev.Type, ErrTaskNotFound, ev.TaskID)
+			}
+			for _, dep := range spec.DependsOn {
+				depState := state.Tasks[dep]
+				if depState == nil || depState.Status != TaskStatusCompleted {
+					status := TaskStatus("")
+					if depState != nil {
+						status = depState.Status
+					}
+					return nil, fmt.Errorf("dependency violation at seq=%d: task %q leased before dependency %q completed (status=%s)", ev.Seq, ev.TaskID, dep, status)
+				}
+			}
+		}
+		if err := Apply(state, ev); err != nil {
+			return nil, fmt.Errorf("apply event seq=%d type=%s: %w", ev.Seq, ev.Type, err)
+		}
+	}
+
 	completed := 0
 	ambiguous := 0
 	for _, id := range state.TopoOrder {

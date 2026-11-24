@@ -64,6 +64,9 @@ type TaskSpec struct {
 	Priority       int            `yaml:"priority,omitempty" json:"priority,omitempty"`
 	MaxRetries     int            `yaml:"max_retries,omitempty" json:"max_retries,omitempty"`
 	TimeoutMs      int64          `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	Resources      map[string]int `yaml:"resources,omitempty" json:"resources,omitempty"`
+	DeadlineMs     int64          `yaml:"deadline_ms,omitempty" json:"deadline_ms,omitempty"`
+	RetryBackoffMs int64          `yaml:"retry_backoff_ms,omitempty" json:"retry_backoff_ms,omitempty"`
 	CheckpointName string         `yaml:"checkpoint_name,omitempty" json:"checkpoint_name,omitempty"`
 	Params         map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 }
@@ -107,8 +110,9 @@ type TaskCompletedPayload struct {
 }
 
 type TaskFailedPayload struct {
-	Error     string `json:"error"`
-	WillRetry bool   `json:"will_retry"`
+	Error        string `json:"error"`
+	WillRetry    bool   `json:"will_retry"`
+	RetryAfterNs int64  `json:"retry_after_ns,omitempty"`
 }
 
 type CheckpointSavedPayload struct {
@@ -118,8 +122,9 @@ type CheckpointSavedPayload struct {
 }
 
 type LeaseExpiredPayload struct {
-	Reason    string `json:"reason"`
-	WillRetry bool   `json:"will_retry"`
+	Reason       string `json:"reason"`
+	WillRetry    bool   `json:"will_retry"`
+	RetryAfterNs int64  `json:"retry_after_ns,omitempty"`
 }
 
 type StaleFencingPayload struct {
@@ -154,6 +159,8 @@ type TaskState struct {
 	FencingToken     int64          `json:"fencing_token"`
 	WorkerID         string         `json:"worker_id,omitempty"`
 	LeaseExpiresAtNs int64          `json:"lease_expires_at_ns,omitempty"`
+	RetryAfterNs     int64          `json:"retry_after_ns,omitempty"`
+	StartedAtNs      int64          `json:"started_at_ns,omitempty"`
 	Output           map[string]any `json:"output,omitempty"`
 	LastError        string         `json:"last_error,omitempty"`
 	AmbiguousCount   int            `json:"ambiguous_count,omitempty"`
@@ -187,8 +194,9 @@ type CmdStartRun struct {
 }
 
 type CmdLeaseNextTask struct {
-	WorkerID string
-	LeaseTTL time.Duration
+	WorkerID           string
+	LeaseTTL           time.Duration
+	AvailableResources map[string]int
 }
 
 type CmdMarkTaskStarted struct {

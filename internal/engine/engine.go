@@ -83,6 +83,10 @@ func Apply(state *RunState, ev Event) error {
 		ts.FencingToken = ev.FencingToken
 		ts.WorkerID = ev.WorkerID
 		ts.LeaseExpiresAtNs = p.LeaseExpiresAtNs
+		ts.RetryAfterNs = 0
+		if ts.StartedAtNs == 0 {
+			ts.StartedAtNs = ev.TimestampNs
+		}
 
 	case EventTaskStarted:
 		ts, ok := state.Tasks[ev.TaskID]
@@ -90,6 +94,9 @@ func Apply(state *RunState, ev Event) error {
 			return fmt.Errorf("%w: %s", ErrTaskNotFound, ev.TaskID)
 		}
 		ts.Status = TaskStatusRunning
+		if ts.StartedAtNs == 0 {
+			ts.StartedAtNs = ev.TimestampNs
+		}
 
 	case EventTaskCompleted:
 		ts, ok := state.Tasks[ev.TaskID]
@@ -104,6 +111,7 @@ func Apply(state *RunState, ev Event) error {
 		}
 		ts.Status = TaskStatusCompleted
 		ts.LeaseExpiresAtNs = 0
+		ts.RetryAfterNs = 0
 		ts.Output = cloneMap(p.Output)
 		ts.CompletedSeq = ev.Seq
 
@@ -136,8 +144,10 @@ func Apply(state *RunState, ev Event) error {
 		ts.LeaseExpiresAtNs = 0
 		if p.WillRetry {
 			ts.Status = TaskStatusPending
+			ts.RetryAfterNs = p.RetryAfterNs
 		} else {
 			ts.Status = TaskStatusFailed
+			ts.RetryAfterNs = 0
 		}
 
 	case EventLeaseExpired:
@@ -154,8 +164,10 @@ func Apply(state *RunState, ev Event) error {
 		ts.LastError = p.Reason
 		if p.WillRetry {
 			ts.Status = TaskStatusPending
+			ts.RetryAfterNs = p.RetryAfterNs
 		} else {
 			ts.Status = TaskStatusFailed
+			ts.RetryAfterNs = 0
 		}
 
 	case EventTaskOutcomeAmbiguous:
@@ -194,6 +206,8 @@ func Apply(state *RunState, ev Event) error {
 				ts.Status = TaskStatusPending
 				ts.WorkerID = ""
 				ts.LeaseExpiresAtNs = 0
+				ts.RetryAfterNs = 0
+				ts.StartedAtNs = 0
 			}
 		}
 
@@ -252,7 +266,7 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 		if ttl <= 0 {
 			ttl = DefaultLeaseTTL
 		}
-		taskID, ok := pickNextReadyTask(dag, state)
+		taskID, ok := pickNextReadyTask(dag, state, nowNs, c.AvailableResources)
 		if !ok {
 			return nil, nil, nil
 		}
@@ -431,6 +445,10 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 
 		spec := dag.TasksByID[c.TaskID]
 		willRetry := ts.Attempt <= spec.MaxRetries
+		var retryAfterNs int64
+		if willRetry {
+			retryAfterNs = computeRetryAfterNs(nowNs, spec.RetryBackoffMs, ts.Attempt)
+		}
 		failEv := Event{
 			RunID:        state.RunID,
 			Seq:          nextSeq,
@@ -441,8 +459,9 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 			FencingToken: c.FencingToken,
 			WorkerID:     c.WorkerID,
 			Payload: mustMarshal(TaskFailedPayload{
-				Error:     c.ErrMsg,
-				WillRetry: willRetry,
+				Error:        c.ErrMsg,
+				WillRetry:    willRetry,
+				RetryAfterNs: retryAfterNs,
 			}),
 		}
 		events := []Event{failEv}
@@ -479,11 +498,21 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 			if ts.Status != TaskStatusLeased && ts.Status != TaskStatusRunning {
 				continue
 			}
-			if ts.LeaseExpiresAtNs == 0 || nowNs < ts.LeaseExpiresAtNs {
+			spec := dag.TasksByID[id]
+			deadlineExceeded := spec.DeadlineMs > 0 && nowNs-ts.StartedAtNs >= spec.DeadlineMs*int64(time.Millisecond)
+			leaseExpired := ts.LeaseExpiresAtNs > 0 && nowNs >= ts.LeaseExpiresAtNs
+			if !deadlineExceeded && !leaseExpired {
 				continue
 			}
-			spec := dag.TasksByID[id]
+			reason := fmt.Sprintf("worker %s lease expired", ts.WorkerID)
+			if deadlineExceeded {
+				reason = "task deadline exceeded"
+			}
 			willRetry := ts.Attempt <= spec.MaxRetries
+			var retryAfterNs int64
+			if willRetry {
+				retryAfterNs = computeRetryAfterNs(nowNs, spec.RetryBackoffMs, ts.Attempt)
+			}
 			events = append(events,
 				Event{
 					RunID:        state.RunID,
@@ -495,8 +524,9 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 					FencingToken: ts.FencingToken,
 					WorkerID:     ts.WorkerID,
 					Payload: mustMarshal(LeaseExpiredPayload{
-						Reason:    fmt.Sprintf("worker %s lease expired", ts.WorkerID),
-						WillRetry: willRetry,
+						Reason:       reason,
+						WillRetry:    willRetry,
+						RetryAfterNs: retryAfterNs,
 					}),
 				},
 				Event{
@@ -605,24 +635,59 @@ func ResolveTaskInput(dag *DAG, state *RunState, taskID string) map[string]any {
 	return out
 }
 
-func pickNextReadyTask(dag *DAG, state *RunState) (string, bool) {
+func pickNextReadyTask(dag *DAG, state *RunState, nowNs int64, availableResources map[string]int) (string, bool) {
 	for _, id := range state.TopoOrder {
 		ts := state.Tasks[id]
 		if ts.Status != TaskStatusPending {
 			continue
 		}
+		if ts.RetryAfterNs > nowNs {
+			continue
+		}
+		spec := dag.TasksByID[id]
 		depsReady := true
-		for _, dep := range dag.TasksByID[id].DependsOn {
+		for _, dep := range spec.DependsOn {
 			if state.Tasks[dep].Status != TaskStatusCompleted {
 				depsReady = false
 				break
 			}
 		}
-		if depsReady {
-			return id, true
+		if !depsReady {
+			continue
 		}
+		if !resourcesSatisfied(spec.Resources, availableResources) {
+			continue
+		}
+		return id, true
 	}
 	return "", false
+}
+
+func resourcesSatisfied(required, available map[string]int) bool {
+	if len(available) == 0 || len(required) == 0 {
+		return true
+	}
+	for k, need := range required {
+		if available[k] < need {
+			return false
+		}
+	}
+	return true
+}
+
+func computeRetryAfterNs(nowNs int64, backoffMs int64, attempt int) int64 {
+	if backoffMs <= 0 {
+		return 0
+	}
+	shift := attempt - 1
+	if shift < 0 {
+		shift = 0
+	}
+	if shift > 30 {
+		shift = 30
+	}
+	delayMs := backoffMs * (int64(1) << uint(shift))
+	return nowNs + delayMs*int64(time.Millisecond)
 }
 
 func cloneMap(src map[string]any) map[string]any {
