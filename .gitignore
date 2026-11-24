@@ -1,0 +1,19 @@
+# Build & binary outputs
+/chronos
+/bin/
+/dist/
+*.test
+*.out
+
+# Local runtime state
+.chronos/
+*.db
+*.db-wal
+*.db-shm
+
+# Local agent/tool state
+.agents/
+.gstack/
+.env
+.env.*
+.DS_Store
