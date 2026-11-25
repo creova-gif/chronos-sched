@@ -107,6 +107,8 @@ func run(args []string) error {
 		return cmdTrace(args[1:])
 	case "schedule":
 		return cmdSchedule(args[1:])
+	case "gc":
+		return cmdGC(args[1:])
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -136,6 +138,7 @@ Usage:
   chronos import <bundle.json> [--run-id id] [--db .chronos/chronos.db]
   chronos trace <run_id> [-o trace.json] [--db .chronos/chronos.db]
   chronos schedule <add|list|delete> ... [--db .chronos/chronos.db]
+  chronos gc [--older-than 168h] [--dry-run] [--vacuum] [--db .chronos/chronos.db]
 `)
 }
 
@@ -336,6 +339,39 @@ func cmdDemo(args []string) error {
 		},
 		OnReplay: func(runID string) (string, error) {
 			return replayRunFromStore(ctx, st, runID)
+		},
+		OnPauseResume: func(runID string, pause bool) (string, error) {
+			action := "resume"
+			if pause {
+				action = "pause"
+			}
+			var resp runtime.RunLifecycleResponse
+			if err := rpcPost(coordURL+"/v1/runs/"+runID+"/"+action, runtime.RunLifecycleRequest{Reason: "tui"}, &resp); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Run %s -> %s", resp.RunID, resp.Status), nil
+		},
+		OnCancel: func(runID string) (string, error) {
+			var resp runtime.RunLifecycleResponse
+			if err := rpcPost(coordURL+"/v1/runs/"+runID+"/cancel", runtime.RunLifecycleRequest{Reason: "tui"}, &resp); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Run %s -> %s", resp.RunID, resp.Status), nil
+		},
+		OnTraceExport: func(runID string) (string, error) {
+			evs, err := st.LoadRunEvents(ctx, runID)
+			if err != nil {
+				return "", err
+			}
+			raw, err := export.ToChromeTrace(evs)
+			if err != nil {
+				return "", err
+			}
+			outFile := filepath.Join(".chronos", runID+".trace.json")
+			if err := os.WriteFile(outFile, raw, 0o644); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Exported Perfetto trace -> %s", outFile), nil
 		},
 		OnDiff: func(runA, runB string) (string, error) {
 			return diffRunsFromStore(ctx, st, runA, runB)
@@ -624,6 +660,24 @@ func cmdWorkflowInspect(args []string) error {
 				return "", err
 			}
 			return resp.RunID, nil
+		},
+		OnPauseResume: func(id string, pause bool) (string, error) {
+			action := "resume"
+			if pause {
+				action = "pause"
+			}
+			var resp runtime.RunLifecycleResponse
+			if err := rpcPost(*coordURL+"/v1/runs/"+id+"/"+action, runtime.RunLifecycleRequest{Reason: "tui"}, &resp); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Run %s -> %s", resp.RunID, resp.Status), nil
+		},
+		OnCancel: func(id string) (string, error) {
+			var resp runtime.RunLifecycleResponse
+			if err := rpcPost(*coordURL+"/v1/runs/"+id+"/cancel", runtime.RunLifecycleRequest{Reason: "tui"}, &resp); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Run %s -> %s", resp.RunID, resp.Status), nil
 		},
 	})
 	_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
@@ -1080,6 +1134,36 @@ func cmdSchedule(args []string) error {
 	default:
 		return fmt.Errorf("unknown schedule subcommand %q", args[0])
 	}
+}
+
+func cmdGC(args []string) error {
+	fs := flag.NewFlagSet("gc", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	olderThan := fs.Duration("older-than", 7*24*time.Hour, "prune terminal runs older than this duration")
+	dryRun := fs.Bool("dry-run", false, "report prunable runs without deleting")
+	vacuum := fs.Bool("vacuum", false, "run WAL checkpoint and VACUUM after pruning")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+
+	st, err := sqlite.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	cutoffNs := time.Now().Add(-*olderThan).UnixNano()
+	rep, err := st.PruneTerminalRuns(context.Background(), store.PruneOptions{
+		CutoffNs: cutoffNs,
+		DryRun:   *dryRun,
+		Vacuum:   *vacuum,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("GC dry_run=%v candidates=%d deleted_runs=%d deleted_events=%d skipped_lineage_parents=%d vacuumed=%v\n",
+		*dryRun, len(rep.CandidateRunIDs), rep.DeletedRuns, rep.DeletedEvents, len(rep.SkippedLineageParents), rep.Vacuumed)
+	return nil
 }
 
 func diffRunsFromStore(ctx context.Context, st *sqlite.Store, runA, runB string) (string, error) {

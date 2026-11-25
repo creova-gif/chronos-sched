@@ -375,3 +375,182 @@ func TestStreamEventsParsesSSEAndCancelsCleanly(t *testing.T) {
 		t.Fatalf("StreamEvents did not exit cleanly after context cancel")
 	}
 }
+
+func TestTUIPauseResumeToggle(t *testing.T) {
+	t.Parallel()
+
+	status := engine.RunStatusRunning
+	var calls []bool
+	m := tui.NewModel(tui.Config{
+		RunID: "run_pause_1",
+		Fetch: func(runID string) (runtime.RunSnapshotResponse, []engine.Event, error) {
+			snap := sampleSnapshot(runID, nil)
+			snap.State.Status = status
+			return snap, nil, nil
+		},
+		OnPauseResume: func(runID string, pause bool) (string, error) {
+			if runID != "run_pause_1" {
+				t.Fatalf("expected run_pause_1, got %q", runID)
+			}
+			calls = append(calls, pause)
+			if pause {
+				status = engine.RunStatusPaused
+				return "Run paused.", nil
+			}
+			status = engine.RunStatusRunning
+			return "Run resumed.", nil
+		},
+	})
+	m = loadInitialSnapshot(t, m)
+
+	// First [p] when RUNNING -> pause=true.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = next.(tui.Model)
+	if !strings.Contains(m.View(), "Run paused.") {
+		t.Fatalf("expected pause status in view:\n%s", m.View())
+	}
+	if cmd != nil {
+		next, _ = m.Update(cmd())
+		m = next.(tui.Model)
+	}
+
+	// Second [p] when PAUSED -> pause=false.
+	next, cmd = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = next.(tui.Model)
+	if !strings.Contains(m.View(), "Run resumed.") {
+		t.Fatalf("expected resume status in view:\n%s", m.View())
+	}
+	if cmd != nil {
+		next, _ = m.Update(cmd())
+		_ = next.(tui.Model)
+	}
+
+	if len(calls) != 2 || !calls[0] || calls[1] {
+		t.Fatalf("expected pause calls [true, false], got %v", calls)
+	}
+}
+
+func TestTUICancelRequiresConfirmation(t *testing.T) {
+	t.Parallel()
+
+	cancelCalls := 0
+	var cancelledRun string
+	m := tui.NewModel(tui.Config{
+		RunID: "run_cancel_1",
+		OnCancel: func(runID string) (string, error) {
+			cancelCalls++
+			cancelledRun = runID
+			return "Run run_cancel_1 cancelled.", nil
+		},
+	})
+
+	// Pressing [x] prompts for confirmation without calling OnCancel.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = next.(tui.Model)
+	if cancelCalls != 0 {
+		t.Fatalf("expected 0 cancel calls before confirmation, got %d", cancelCalls)
+	}
+	if !strings.Contains(m.View(), "Cancel run run_cancel_1? Press [y] to confirm or [n]/[esc] to abort.") {
+		t.Fatalf("expected cancel confirmation prompt in view:\n%s", m.View())
+	}
+
+	// Pressing [n] aborts without calling OnCancel.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = next.(tui.Model)
+	if cancelCalls != 0 {
+		t.Fatalf("expected 0 cancel calls after [n] abort, got %d", cancelCalls)
+	}
+	if !strings.Contains(m.View(), "Cancel aborted.") {
+		t.Fatalf("expected Cancel aborted status in view:\n%s", m.View())
+	}
+
+	// Pressing [x] then [y] invokes OnCancel.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	m = next.(tui.Model)
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = next.(tui.Model)
+	if cancelCalls != 1 || cancelledRun != "run_cancel_1" {
+		t.Fatalf("expected 1 cancel call for run_cancel_1, got calls=%d run=%q", cancelCalls, cancelledRun)
+	}
+	if !strings.Contains(m.View(), "Run run_cancel_1 cancelled.") {
+		t.Fatalf("expected cancelled status in view:\n%s", m.View())
+	}
+}
+
+func TestTUITraceExportDisplaysStatus(t *testing.T) {
+	t.Parallel()
+
+	var exportedRun string
+	m := tui.NewModel(tui.Config{
+		RunID: "run_trace_1",
+		OnTraceExport: func(runID string) (string, error) {
+			exportedRun = runID
+			return "/tmp/run_trace_1.perfetto.json", nil
+		},
+	})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	m = next.(tui.Model)
+	if exportedRun != "run_trace_1" {
+		t.Fatalf("expected OnTraceExport called with run_trace_1, got %q", exportedRun)
+	}
+	if !strings.Contains(m.View(), "/tmp/run_trace_1.perfetto.json") {
+		t.Fatalf("expected trace path in status bar:\n%s", m.View())
+	}
+}
+
+func TestTUITaskFilterNarrowsDAGPaneAndEscClears(t *testing.T) {
+	t.Parallel()
+
+	m := tui.NewModel(tui.Config{
+		RunID: "run_filter_1",
+		Fetch: func(runID string) (runtime.RunSnapshotResponse, []engine.Event, error) {
+			return sampleSnapshot(runID, nil), nil, nil
+		},
+	})
+	m = loadInitialSnapshot(t, m)
+
+	// Open filter mode with [/] and type "transform".
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = next.(tui.Model)
+	for _, r := range "transform" {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = next.(tui.Model)
+	}
+
+	filteredView := m.View()
+	if !strings.Contains(filteredView, "transform") {
+		t.Fatalf("expected matching task transform in filtered view:\n%s", filteredView)
+	}
+	if strings.Contains(filteredView, "extract") || strings.Contains(filteredView, "load") {
+		t.Fatalf("expected non-matching tasks extract/load to be hidden in filtered view:\n%s", filteredView)
+	}
+
+	// Lock filter with [enter], verify filter persists.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = next.(tui.Model)
+	lockedView := m.View()
+	if !strings.Contains(lockedView, "transform") || strings.Contains(lockedView, "extract") {
+		t.Fatalf("expected locked filter to remain active after enter:\n%s", lockedView)
+	}
+
+	// Clear filter with [esc], verify all tasks return.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = next.(tui.Model)
+	clearedView := m.View()
+	if !strings.Contains(clearedView, "extract") || !strings.Contains(clearedView, "transform") || !strings.Contains(clearedView, "load") {
+		t.Fatalf("expected all tasks restored after esc:\n%s", clearedView)
+	}
+
+	// Also verify filtering by WorkerID ("w-2" only has transform).
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	m = next.(tui.Model)
+	for _, r := range "w-2" {
+		next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = next.(tui.Model)
+	}
+	workerFiltered := m.View()
+	if !strings.Contains(workerFiltered, "transform") || strings.Contains(workerFiltered, "extract") || strings.Contains(workerFiltered, "load") {
+		t.Fatalf("expected WorkerID filter w-2 to show only transform:\n%s", workerFiltered)
+	}
+}

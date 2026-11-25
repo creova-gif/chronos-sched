@@ -24,6 +24,9 @@ type Config struct {
 	OnForkWithOverride func(runID string, checkpointNum int, override string) (string, error)
 	OnDiff             func(runA, runB string) (string, error)
 	OnReplay           func(runID string) (string, error)
+	OnPauseResume      func(runID string, pause bool) (string, error)
+	OnCancel           func(runID string) (string, error)
+	OnTraceExport      func(runID string) (string, error)
 }
 
 type tickMsg time.Time
@@ -48,6 +51,9 @@ type Model struct {
 	forkModalOpen     bool
 	forkSelectedIdx   int
 	forkOverrideInput string
+	confirmCancel     bool
+	filterMode        bool
+	taskFilter        string
 	width             int
 	height            int
 	quitting          bool
@@ -116,11 +122,68 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.forkModalOpen {
 			return m.updateForkModal(msg)
 		}
+		if m.confirmCancel {
+			return m.updateConfirmCancel(msg)
+		}
+		if m.filterMode {
+			return m.updateFilterMode(msg)
+		}
 
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
+
+		case "esc":
+			if m.taskFilter != "" {
+				m.taskFilter = ""
+				m.statusLine = "Filter cleared."
+			}
+			return m, nil
+
+		case "/":
+			m.filterMode = true
+			return m, nil
+
+		case "p":
+			if m.cfg.OnPauseResume == nil {
+				m.statusLine = "Pause/resume unavailable."
+				return m, nil
+			}
+			if m.snap.State == nil {
+				m.statusLine = "No active run snapshot yet."
+				return m, nil
+			}
+			pause := m.snap.State.Status != engine.RunStatusPaused
+			out, err := m.cfg.OnPauseResume(m.activeRun, pause)
+			if err != nil {
+				m.statusLine = fmt.Sprintf("Pause/resume failed: %v", err)
+				return m, nil
+			}
+			m.statusLine = out
+			return m, m.fetchCmd()
+
+		case "x":
+			if m.cfg.OnCancel == nil {
+				m.statusLine = "Cancel unavailable."
+				return m, nil
+			}
+			m.confirmCancel = true
+			m.statusLine = fmt.Sprintf("Cancel run %s? Press [y] to confirm or [n]/[esc] to abort.", m.activeRun)
+			return m, nil
+
+		case "t":
+			if m.cfg.OnTraceExport == nil {
+				m.statusLine = "Trace export unavailable."
+				return m, nil
+			}
+			out, err := m.cfg.OnTraceExport(m.activeRun)
+			if err != nil {
+				m.statusLine = fmt.Sprintf("Trace export failed: %v", err)
+				return m, nil
+			}
+			m.statusLine = out
+			return m, nil
 
 		case "k":
 			if !m.cfg.AllowKill {
@@ -294,6 +357,68 @@ func (m Model) updateForkModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateConfirmCancel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	if msg.Type == tea.KeyEsc || msg.String() == "esc" || msg.String() == "n" || msg.String() == "N" {
+		m.confirmCancel = false
+		m.statusLine = "Cancel aborted."
+		return m, nil
+	}
+	if msg.String() == "y" || msg.String() == "Y" {
+		m.confirmCancel = false
+		if m.cfg.OnCancel == nil {
+			m.statusLine = "Cancel unavailable."
+			return m, nil
+		}
+		out, err := m.cfg.OnCancel(m.activeRun)
+		if err != nil {
+			m.statusLine = fmt.Sprintf("Cancel failed: %v", err)
+			return m, nil
+		}
+		m.statusLine = out
+		return m, m.fetchCmd()
+	}
+	return m, nil
+}
+
+func (m Model) updateFilterMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		m.quitting = true
+		return m, tea.Quit
+	}
+	if msg.Type == tea.KeyEsc || msg.String() == "esc" {
+		m.filterMode = false
+		m.taskFilter = ""
+		m.statusLine = "Filter cleared."
+		return m, nil
+	}
+	switch msg.String() {
+	case "enter":
+		m.filterMode = false
+		if m.taskFilter != "" {
+			m.statusLine = fmt.Sprintf("Filter locked: %q (press [/] to edit, [esc] to clear)", m.taskFilter)
+		} else {
+			m.statusLine = "Filter cleared."
+		}
+		return m, nil
+	case "backspace", "ctrl+h":
+		if len(m.taskFilter) > 0 {
+			_, size := utf8.DecodeLastRuneInString(m.taskFilter)
+			m.taskFilter = m.taskFilter[:len(m.taskFilter)-size]
+		}
+		return m, nil
+	}
+	if msg.Type == tea.KeyRunes {
+		m.taskFilter += string(msg.Runes)
+	} else if msg.Type == tea.KeySpace {
+		m.taskFilter += " "
+	}
+	return m, nil
+}
+
 func (m *Model) addBranch(runID string) {
 	if runID == "" {
 		return
@@ -358,7 +483,7 @@ func (m Model) View() string {
 		b.WriteString(borderStyle.Render("TIMELINE DIFF (press [d] to close)\n" + m.diffView))
 		b.WriteString("\n")
 	} else {
-		left := renderDAGPane(m.snap.State)
+		left := renderDAGPane(m.snap.State, m.taskFilter)
 		right := renderJournalPane(m.events)
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,
 			borderStyle.Width(44).Render(left),
@@ -367,11 +492,14 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
+	if m.filterMode {
+		b.WriteString(fmt.Sprintf("Filter: /%s_  ([enter] lock, [esc] clear)\n", m.taskFilter))
+	}
 	b.WriteString(mutedStyle.Render("Status: "+m.statusLine) + "\n")
 	if m.cfg.AllowKill {
-		b.WriteString(mutedStyle.Render("[k] Kill worker (SIGKILL)  [f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [q] Quit") + "\n")
+		b.WriteString(mutedStyle.Render("[k] Kill worker (SIGKILL)  [f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [p] Pause/Resume  [x] Cancel  [t] Trace  [/] Filter  [q] Quit") + "\n")
 	} else {
-		b.WriteString(mutedStyle.Render("[f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [q] Quit  (read-only: [k] disabled)") + "\n")
+		b.WriteString(mutedStyle.Render("[f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [p] Pause/Resume  [x] Cancel  [t] Trace  [/] Filter  [q] Quit  (read-only: [k] disabled)") + "\n")
 	}
 	return b.String()
 }
@@ -418,9 +546,25 @@ func renderForkModal(st *engine.RunState, selectedIdx int, overrideInput string)
 	return b.String()
 }
 
-func renderDAGPane(st *engine.RunState) string {
+func matchesTaskFilter(ts *engine.TaskState, filter string) bool {
+	if filter == "" {
+		return true
+	}
+	if ts == nil {
+		return false
+	}
+	needle := strings.ToLower(filter)
+	return strings.Contains(strings.ToLower(ts.ID), needle) ||
+		strings.Contains(strings.ToLower(ts.WorkerID), needle)
+}
+
+func renderDAGPane(st *engine.RunState, filter string) string {
 	var b strings.Builder
-	b.WriteString("DAG Execution\n")
+	if filter != "" {
+		fmt.Fprintf(&b, "DAG Execution [filter: %s]\n", filter)
+	} else {
+		b.WriteString("DAG Execution\n")
+	}
 	if st == nil {
 		b.WriteString("  (waiting for snapshot...)")
 		return b.String()
@@ -429,7 +573,7 @@ func renderDAGPane(st *engine.RunState) string {
 	shown := 0
 	const maxRows = 14
 	addRow := func(ts *engine.TaskState) {
-		if shown >= maxRows {
+		if shown >= maxRows || !matchesTaskFilter(ts, filter) {
 			return
 		}
 		tag := "[q]  "
@@ -467,6 +611,9 @@ func renderDAGPane(st *engine.RunState) string {
 		if ts := st.Tasks[st.TopoOrder[i]]; ts.Status == engine.TaskStatusCompleted {
 			addRow(ts)
 		}
+	}
+	if shown == 0 && filter != "" {
+		b.WriteString("  (no matching tasks)\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
