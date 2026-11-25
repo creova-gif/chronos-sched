@@ -208,4 +208,10 @@ tasks:
 	if !strings.Contains(schedDel, `Deleted schedule "nightly"`) {
 		t.Fatalf("unexpected schedule delete output: %s", schedDel)
 	}
+
+	// 8. Lineage-safe GC dry-run.
+	gcOut := runCLI("gc", "--older-than", "0s", "--dry-run", "--db", dbPath)
+	if !strings.Contains(gcOut, "GC dry_run=true") || !strings.Contains(gcOut, "deleted_runs=0") {
+		t.Fatalf("unexpected gc dry-run output: %s", gcOut)
+	}
 }

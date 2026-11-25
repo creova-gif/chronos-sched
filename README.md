@@ -25,9 +25,10 @@ chronos export run_001 -o crash.bundle.json
 chronos import crash.bundle.json --run-id run_repro
 chronos trace run_001 -o trace.json
 
-# Recurring deterministic cron schedules and live lifecycle controls
+# Recurring deterministic cron schedules, live lifecycle controls, and journal GC
 chronos schedule add nightly --cron "0 2 * * *" --workflow pipeline.yaml
 chronos workflow pause run_001 && chronos workflow resume run_001
+chronos gc --older-than 168h --dry-run
 ```
 
 ## Measured Local Performance (Apple M5, darwin/arm64)
@@ -54,6 +55,8 @@ chronos workflow pause run_001 && chronos workflow resume run_001
 - [ADR-005: Prometheus Metrics & Observability](docs/adr/005-prometheus-metrics-and-observability.md)
 - [ADR-006: Deterministic Cron Schedules](docs/adr/006-deterministic-cron-schedules.md)
 - [ADR-007: Flight-Recorder Bundle & Perfetto Trace](docs/adr/007-flight-recorder-bundle-and-perfetto-trace.md)
+- [ADR-008: Journal Retention & Compaction](docs/adr/008-journal-retention-and-compaction.md)
+- [OpenAPI 3.1 Specification](docs/api/openapi.yaml)
 - [CHANGELOG](CHANGELOG.md)
 - [Threat Model](docs/THREAT_MODEL.md)
 - [Engineering Standards](AGENTS.md)

@@ -1,0 +1,1030 @@
+openapi: 3.1.0
+info:
+  title: ChronosSched Coordinator API
+  version: 0.1.0
+  description: >
+    HTTP/JSON and SSE API for the ChronosSched distributed DAG workflow
+    coordinator, supporting workflow submission, run snapshots, live event
+    streaming, time-travel timeline forking/merging, run lifecycle controls,
+    and lease-fenced worker coordination.
+paths:
+  /healthz:
+    get:
+      summary: Health check
+      operationId: getHealth
+      responses:
+        "200":
+          description: Coordinator is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus text exposition format 0.0.4
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /v1/workflows/run:
+    post:
+      summary: Submit a workflow run
+      operationId: submitWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitWorkflowRequest"
+      responses:
+        "201":
+          description: Workflow run created and started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitWorkflowResponse"
+        "400":
+          description: Invalid request or workflow YAML
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs:
+    get:
+      summary: List workflow runs
+      operationId: listRuns
+      responses:
+        "200":
+          description: List of stored run records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunRecord"
+        "500":
+          description: Internal store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}:
+    get:
+      summary: Get run snapshot
+      operationId: getRun
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: Folded run state and known workers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunSnapshotResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/events:
+    get:
+      summary: Stream run events via Server-Sent Events (SSE)
+      operationId: streamRunEvents
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: >
+            Server-Sent Events stream emitting historical events followed by
+            live SSEMessage JSON frames formatted as `data: <json>\n\n`.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal or streaming error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/fork:
+    post:
+      summary: Fork a run from a checkpoint
+      operationId: forkRun
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForkRunRequest"
+      responses:
+        "201":
+          description: Forked run created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForkRunResponse"
+        "400":
+          description: Invalid fork request or checkpoint
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Parent run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/merge:
+    post:
+      summary: Merge a branch run onto a base run
+      operationId: mergeRun
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MergeRunRequest"
+      responses:
+        "201":
+          description: Merged run created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MergeRunResponse"
+        "400":
+          description: Invalid merge request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Base or branch run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Merge conflict detected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/pause:
+    post:
+      summary: Pause an active run
+      operationId: pauseRun
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunLifecycleRequest"
+      responses:
+        "200":
+          description: Run paused
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunLifecycleResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/resume:
+    post:
+      summary: Resume a paused run
+      operationId: resumeRun
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunLifecycleRequest"
+      responses:
+        "200":
+          description: Run resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunLifecycleResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/cancel:
+    post:
+      summary: Cancel a non-terminal run
+      operationId: cancelRun
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunLifecycleRequest"
+      responses:
+        "200":
+          description: Run cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunLifecycleResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/workers/register:
+    post:
+      summary: Register a worker and renew inherited leases
+      operationId: registerWorker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerRegisterRequest"
+      responses:
+        "200":
+          description: Worker registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerRegisterResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/workers/poll:
+    post:
+      summary: Poll for the next runnable task lease
+      operationId: pollWorker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LeasePollRequest"
+      responses:
+        "200":
+          description: Poll result (with optional leased task)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LeasePollResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/workers/heartbeat:
+    post:
+      summary: Send worker heartbeat and renew active leases
+      operationId: heartbeatWorker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: Heartbeat acknowledged with renewed count and revoked leases
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/tasks/started:
+    post:
+      summary: Mark a leased task as started
+      operationId: markTaskStarted
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskStartedRequest"
+      responses:
+        "200":
+          description: Task marked as started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale fencing token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/tasks/complete:
+    post:
+      summary: Report task completion
+      operationId: completeTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCompleteRequest"
+      responses:
+        "200":
+          description: Task completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale fencing token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/tasks/fail:
+    post:
+      summary: Report task failure
+      operationId: failTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskFailRequest"
+      responses:
+        "200":
+          description: Task failure recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Stale fencing token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  parameters:
+    RunID:
+      name: id
+      in: path
+      required: true
+      description: Unique identifier of the workflow run
+      schema:
+        type: string
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          example: ok
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    OkResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    RunStatus:
+      type: string
+      enum: [PENDING, RUNNING, PAUSED, COMPLETED, FAILED, CANCELLED]
+
+    TaskStatus:
+      type: string
+      enum: [PENDING, LEASED, RUNNING, COMPLETED, FAILED]
+
+    EventType:
+      type: string
+      enum:
+        - RUN_STARTED
+        - TASK_LEASED
+        - TASK_STARTED
+        - TASK_COMPLETED
+        - TASK_FAILED
+        - CHECKPOINT_SAVED
+        - LEASE_EXPIRED
+        - TASK_OUTCOME_AMBIGUOUS
+        - STALE_FENCING_TOKEN
+        - TIMELINE_FORKED
+        - TIMELINE_MERGED
+        - RUN_COMPLETED
+        - RUN_FAILED
+        - RUN_PAUSED
+        - RUN_RESUMED
+        - RUN_CANCELLED
+
+    ActiveLease:
+      type: object
+      required: [run_id, task_id, fencing_token]
+      properties:
+        run_id:
+          type: string
+        task_id:
+          type: string
+        fencing_token:
+          type: integer
+          format: int64
+
+    WorkerInfo:
+      type: object
+      required: [worker_id, pid, concurrency, last_heartbeat_ns, alive]
+      properties:
+        worker_id:
+          type: string
+        pid:
+          type: integer
+        concurrency:
+          type: integer
+        resources:
+          type: object
+          additionalProperties:
+            type: integer
+        last_heartbeat_ns:
+          type: integer
+          format: int64
+        alive:
+          type: boolean
+
+    CheckpointInfo:
+      type: object
+      required: [number, seq, task_id]
+      properties:
+        number:
+          type: integer
+        name:
+          type: string
+        seq:
+          type: integer
+          format: int64
+        task_id:
+          type: string
+
+    TaskState:
+      type: object
+      required: [id, status, attempt, fencing_token]
+      properties:
+        id:
+          type: string
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        attempt:
+          type: integer
+        fencing_token:
+          type: integer
+          format: int64
+        worker_id:
+          type: string
+        lease_expires_at_ns:
+          type: integer
+          format: int64
+        retry_after_ns:
+          type: integer
+          format: int64
+        started_at_ns:
+          type: integer
+          format: int64
+        output:
+          type: object
+          additionalProperties: true
+        last_error:
+          type: string
+        ambiguous_count:
+          type: integer
+        completed_seq:
+          type: integer
+          format: int64
+
+    RunState:
+      type: object
+      required:
+        - run_id
+        - workflow_name
+        - workflow_hash
+        - status
+        - last_seq
+        - next_fencing_token
+        - next_checkpoint_num
+        - tasks
+        - topo_order
+        - checkpoints
+      properties:
+        run_id:
+          type: string
+        parent_run_id:
+          type: string
+        fork_from_seq:
+          type: integer
+          format: int64
+        workflow_name:
+          type: string
+        workflow_hash:
+          type: string
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        last_seq:
+          type: integer
+          format: int64
+        next_fencing_token:
+          type: integer
+          format: int64
+        next_checkpoint_num:
+          type: integer
+        tasks:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/TaskState"
+        topo_order:
+          type: array
+          items:
+            type: string
+        checkpoints:
+          type: array
+          items:
+            $ref: "#/components/schemas/CheckpointInfo"
+        overrides:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: true
+        failure_reason:
+          type: string
+
+    RunRecord:
+      type: object
+      required: [run_id, workflow_name, workflow_hash, workflow_yaml, status, created_at_ns]
+      properties:
+        run_id:
+          type: string
+        parent_run_id:
+          type: string
+        fork_from_seq:
+          type: integer
+          format: int64
+        workflow_name:
+          type: string
+        workflow_hash:
+          type: string
+        workflow_yaml:
+          type: string
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        created_at_ns:
+          type: integer
+          format: int64
+
+    Event:
+      type: object
+      required: [run_id, seq, ts_ns, event_type]
+      properties:
+        run_id:
+          type: string
+        seq:
+          type: integer
+          format: int64
+        ts_ns:
+          type: integer
+          format: int64
+        event_type:
+          $ref: "#/components/schemas/EventType"
+        task_id:
+          type: string
+        attempt:
+          type: integer
+        fencing_token:
+          type: integer
+          format: int64
+        worker_id:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+
+    SSEMessage:
+      type: object
+      required: [event, run_status]
+      properties:
+        event:
+          $ref: "#/components/schemas/Event"
+        run_status:
+          $ref: "#/components/schemas/RunStatus"
+
+    SubmitWorkflowRequest:
+      type: object
+      required: [workflow_yaml]
+      properties:
+        run_id:
+          type: string
+        workflow_yaml:
+          type: string
+
+    SubmitWorkflowResponse:
+      type: object
+      required: [run_id, workflow_name, task_count]
+      properties:
+        run_id:
+          type: string
+        workflow_name:
+          type: string
+        task_count:
+          type: integer
+
+    RunSnapshotResponse:
+      type: object
+      required: [state, workers]
+      properties:
+        state:
+          $ref: "#/components/schemas/RunState"
+        workers:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkerInfo"
+
+    ForkRunRequest:
+      type: object
+      required: [checkpoint]
+      properties:
+        new_run_id:
+          type: string
+        checkpoint:
+          type: string
+        overrides:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: true
+
+    ForkRunResponse:
+      type: object
+      required: [run_id, parent_run_id, fork_from_seq, checkpoint_num]
+      properties:
+        run_id:
+          type: string
+        parent_run_id:
+          type: string
+        fork_from_seq:
+          type: integer
+          format: int64
+        checkpoint_num:
+          type: integer
+
+    MergeRunRequest:
+      type: object
+      required: [branch_run_id]
+      properties:
+        branch_run_id:
+          type: string
+        new_run_id:
+          type: string
+        tasks:
+          type: array
+          items:
+            type: string
+        prefer_branch:
+          type: boolean
+
+    MergeRunResponse:
+      type: object
+      required: [run_id, base_run_id, branch_run_id, merge_from_seq, status, adopted_count, plan_text]
+      properties:
+        run_id:
+          type: string
+        base_run_id:
+          type: string
+        branch_run_id:
+          type: string
+        merge_from_seq:
+          type: integer
+          format: int64
+        status:
+          $ref: "#/components/schemas/RunStatus"
+        adopted_count:
+          type: integer
+        invalidated_downstream:
+          type: array
+          items:
+            type: string
+        plan_text:
+          type: string
+
+    RunLifecycleRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+
+    RunLifecycleResponse:
+      type: object
+      required: [run_id, status]
+      properties:
+        run_id:
+          type: string
+        status:
+          $ref: "#/components/schemas/RunStatus"
+
+    WorkerRegisterRequest:
+      type: object
+      required: [worker_id, pid, concurrency]
+      properties:
+        worker_id:
+          type: string
+        pid:
+          type: integer
+        concurrency:
+          type: integer
+        resources:
+          type: object
+          additionalProperties:
+            type: integer
+        active_leases:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveLease"
+
+    WorkerRegisterResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+
+    LeasePollRequest:
+      type: object
+      required: [worker_id]
+      properties:
+        worker_id:
+          type: string
+        resources:
+          type: object
+          additionalProperties:
+            type: integer
+
+    LeasedTask:
+      type: object
+      required: [run_id, task_id, handler, attempt, fencing_token]
+      properties:
+        run_id:
+          type: string
+        task_id:
+          type: string
+        handler:
+          type: string
+        attempt:
+          type: integer
+        fencing_token:
+          type: integer
+          format: int64
+        input:
+          type: object
+          additionalProperties: true
+        timeout_ms:
+          type: integer
+          format: int64
+
+    LeasePollResponse:
+      type: object
+      properties:
+        lease:
+          $ref: "#/components/schemas/LeasedTask"
+
+    HeartbeatRequest:
+      type: object
+      required: [worker_id, pid, concurrency]
+      properties:
+        worker_id:
+          type: string
+        pid:
+          type: integer
+        concurrency:
+          type: integer
+        resources:
+          type: object
+          additionalProperties:
+            type: integer
+        active_leases:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveLease"
+
+    HeartbeatResponse:
+      type: object
+      required: [renewed]
+      properties:
+        renewed:
+          type: integer
+        revoked:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveLease"
+
+    TaskStartedRequest:
+      type: object
+      required: [run_id, task_id, worker_id, fencing_token]
+      properties:
+        run_id:
+          type: string
+        task_id:
+          type: string
+        worker_id:
+          type: string
+        fencing_token:
+          type: integer
+          format: int64
+
+    TaskCompleteRequest:
+      type: object
+      required: [run_id, task_id, worker_id, fencing_token]
+      properties:
+        run_id:
+          type: string
+        task_id:
+          type: string
+        worker_id:
+          type: string
+        fencing_token:
+          type: integer
+          format: int64
+        output:
+          type: object
+          additionalProperties: true
+
+    TaskFailRequest:
+      type: object
+      required: [run_id, task_id, worker_id, fencing_token, error]
+      properties:
+        run_id:
+          type: string
+        task_id:
+          type: string
+        worker_id:
+          type: string
+        fencing_token:
+          type: integer
+          format: int64
+        error:
+          type: string
