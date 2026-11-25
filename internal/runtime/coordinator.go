@@ -20,6 +20,7 @@ import (
 type CoordinatorConfig struct {
 	LeaseTTL   time.Duration
 	ReaperTick time.Duration
+	Webhook    *WebhookNotifier
 }
 
 type activeRun struct {
@@ -36,6 +37,7 @@ type Coordinator struct {
 	cfg     CoordinatorConfig
 	nowFn   func() time.Time
 	metrics *metrics.Recorder
+	webhook *WebhookNotifier
 
 	mu      sync.Mutex
 	runs    map[string]*activeRun
@@ -58,6 +60,7 @@ func NewCoordinator(st store.JournalStore, cfg CoordinatorConfig) *Coordinator {
 		cfg:     cfg,
 		nowFn:   time.Now,
 		metrics: &metrics.Recorder{},
+		webhook: cfg.Webhook,
 		runs:    make(map[string]*activeRun),
 		workers: make(map[string]*WorkerInfo),
 		subs:    make(map[string]map[chan SSEMessage]struct{}),
@@ -455,6 +458,17 @@ func (c *Coordinator) commitEventsLocked(ctx context.Context, ar *activeRun, pre
 			c.metrics.IncAmbiguousOutcomes()
 		case engine.EventStaleFencingToken:
 			c.metrics.IncStaleFencingTokens()
+		case engine.EventRunCompleted, engine.EventRunFailed, engine.EventRunCancelled:
+			if c.webhook != nil {
+				c.webhook.Notify(WebhookPayload{
+					Event:         string(ev.Type),
+					RunID:         ar.state.RunID,
+					WorkflowName:  ar.state.WorkflowName,
+					Status:        ar.state.Status,
+					TimestampNs:   ev.TimestampNs,
+					FailureReason: ar.state.FailureReason,
+				})
+			}
 		}
 	}
 	c.broadcast(ar.state.RunID, evs, ar.state.Status)

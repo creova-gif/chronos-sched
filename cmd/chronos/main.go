@@ -109,6 +109,11 @@ func run(args []string) error {
 		return cmdSchedule(args[1:])
 	case "gc":
 		return cmdGC(args[1:])
+	case "doctor":
+		return cmdDoctor(args[1:])
+	case "version":
+		fmt.Println(FormatVersion())
+		return nil
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -123,22 +128,24 @@ func printUsage() {
 Usage:
   chronos init [--dir .chronos]
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
-  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s]
+  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--webhook-url url] [--webhook-secret sec]
   chronos worker start [--coordinator http://127.0.0.1:7420] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
   chronos workflow <pause|resume|cancel> <run_id> [--reason text] [--coordinator http://127.0.0.1:7420]
-  chronos history <run_id> [--db .chronos/chronos.db]
+  chronos history <run_id> [--redact] [--db .chronos/chronos.db]
   chronos replay <run_id> [--dry-run] [--db .chronos/chronos.db]
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
   chronos branches [--db .chronos/chronos.db]
   chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--apply] [--new-run-id id] [--coordinator http://127.0.0.1:7420] [--db .chronos/chronos.db]
-  chronos export <run_id> [-o bundle.json] [--db .chronos/chronos.db]
+  chronos export <run_id> [-o bundle.json] [--redact] [--db .chronos/chronos.db]
   chronos import <bundle.json> [--run-id id] [--db .chronos/chronos.db]
   chronos trace <run_id> [-o trace.json] [--db .chronos/chronos.db]
   chronos schedule <add|list|delete> ... [--db .chronos/chronos.db]
   chronos gc [--older-than 168h] [--dry-run] [--vacuum] [--db .chronos/chronos.db]
+  chronos doctor [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
+  chronos version
 `)
 }
 
@@ -392,12 +399,30 @@ func cmdServerStart(args []string) error {
 	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
 	haID := fs.String("ha-id", "", "optional HA candidate ID to enable active-standby leader election")
 	haTTL := fs.Duration("ha-ttl", 5*time.Second, "leader lease TTL when --ha-id is set")
+	webhookURL := fs.String("webhook-url", "", "optional webhook URL for terminal run notifications")
+	webhookSecret := fs.String("webhook-secret", "", "optional HMAC-SHA256 secret for webhook signing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	var notifier *runtime.WebhookNotifier
+	if strings.TrimSpace(*webhookURL) != "" {
+		var err error
+		notifier, err = runtime.NewWebhookNotifier(runtime.WebhookConfig{
+			URL:    *webhookURL,
+			Secret: *webhookSecret,
+		})
+		if err != nil {
+			return fmt.Errorf("invalid webhook config: %w", err)
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if notifier != nil {
+		go notifier.Start(ctx)
+	}
 
 	serveOnce := func(runCtx context.Context, epoch int64) error {
 		st, err := sqlite.Open(*dbPath)
@@ -409,6 +434,7 @@ func cmdServerStart(args []string) error {
 		coord := runtime.NewCoordinator(st, runtime.CoordinatorConfig{
 			LeaseTTL:   engine.DefaultLeaseTTL,
 			ReaperTick: engine.DefaultReaperTick,
+			Webhook:    notifier,
 		})
 		if err := coord.Recover(runCtx); err != nil {
 			return fmt.Errorf("recover coordinator state: %w", err)
@@ -687,11 +713,12 @@ func cmdWorkflowInspect(args []string) error {
 func cmdHistory(args []string) error {
 	fs := flag.NewFlagSet("history", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	redact := fs.Bool("redact", false, "redact sensitive keys (secrets, tokens, passwords) in output")
 	if err := parseFlagsAnyOrder(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: chronos history <run_id> [--db %s]", defaultDBPath)
+		return fmt.Errorf("usage: chronos history <run_id> [--redact] [--db %s]", defaultDBPath)
 	}
 	runID := fs.Arg(0)
 
@@ -704,6 +731,9 @@ func cmdHistory(args []string) error {
 	evs, err := st.LoadRunEvents(context.Background(), runID)
 	if err != nil {
 		return err
+	}
+	if *redact {
+		evs = engine.RedactEvents(evs)
 	}
 	for _, ev := range evs {
 		fmt.Printf("%04d  %-22s  task=%-14s  att=%d  tok=%d  worker=%-10s  %s\n",
@@ -936,11 +966,12 @@ func cmdExport(args []string) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
 	outPath := fs.String("o", "", "output bundle file path (default stdout)")
+	redact := fs.Bool("redact", false, "redact sensitive keys in exported event payloads")
 	if err := parseFlagsAnyOrder(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: chronos export <run_id> [-o bundle.json] [--db %s]", defaultDBPath)
+		return fmt.Errorf("usage: chronos export <run_id> [-o bundle.json] [--redact] [--db %s]", defaultDBPath)
 	}
 	st, err := sqlite.OpenReadOnly(*dbPath)
 	if err != nil {
@@ -951,6 +982,9 @@ func cmdExport(args []string) error {
 	bundle, err := export.ExportBundle(context.Background(), st, fs.Arg(0))
 	if err != nil {
 		return err
+	}
+	if *redact {
+		bundle.Events = engine.RedactEvents(bundle.Events)
 	}
 	raw, err := json.MarshalIndent(bundle, "", "  ")
 	if err != nil {
@@ -1163,6 +1197,22 @@ func cmdGC(args []string) error {
 	}
 	fmt.Printf("GC dry_run=%v candidates=%d deleted_runs=%d deleted_events=%d skipped_lineage_parents=%d vacuumed=%v\n",
 		*dryRun, len(rep.CandidateRunIDs), rep.DeletedRuns, rep.DeletedEvents, len(rep.SkippedLineageParents), rep.Vacuumed)
+	return nil
+}
+
+func cmdDoctor(args []string) error {
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	coordURL := fs.String("coordinator", defaultCoordURL, "optional coordinator URL to probe /healthz")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	checks := RunDoctorChecks(context.Background(), *dbPath, *coordURL)
+	report, hasFail := FormatDoctorReport(checks)
+	fmt.Print(report)
+	if hasFail {
+		return fmt.Errorf("doctor reported one or more FAIL checks")
+	}
 	return nil
 }
 
