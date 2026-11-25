@@ -2,7 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -117,6 +119,23 @@ tasks:
 		t.Fatalf("unexpected fork output: %s", forkOut)
 	}
 	waitDone("run_cli_2")
+
+	// 4b. Materialize live merge via chronos merge --apply and verify /metrics endpoint.
+	mergeApplyOut := runCLI("merge", "run_cli_1", "run_cli_2", "--prefer-branch", "--apply", "--new-run-id", "run_cli_merged", "--coordinator", coordURL)
+	if !strings.Contains(mergeApplyOut, "run_cli_merged") {
+		t.Fatalf("unexpected merge --apply output:\n%s", mergeApplyOut)
+	}
+	waitDone("run_cli_merged")
+
+	mResp, err := http.Get(coordURL + "/metrics")
+	if err != nil {
+		t.Fatalf("GET /metrics: %v", err)
+	}
+	mBody, _ := io.ReadAll(mResp.Body)
+	_ = mResp.Body.Close()
+	if mResp.StatusCode != http.StatusOK || !strings.Contains(string(mBody), "chronos_timelines_merged_total 1") {
+		t.Fatalf("unexpected /metrics response (status=%d):\n%s", mResp.StatusCode, string(mBody))
+	}
 
 	// 5. Stop server & worker, then run offline SQLite CLI commands: history, replay, diff, branches.
 	_ = workerCmd.Process.Kill()

@@ -211,6 +211,66 @@ func Apply(state *RunState, ev Event) error {
 			}
 		}
 
+	case EventTimelineMerged:
+		var p TimelineMergedPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			return fmt.Errorf("unmarshal TIMELINE_MERGED: %w", err)
+		}
+		state.RunID = ev.RunID
+		state.ParentRunID = p.BaseRunID
+		state.ForkFromSeq = p.MergeFromSeq
+		state.FailureReason = ""
+		// Clear any inherited active leases so non-completed tasks re-enqueue cleanly.
+		for _, id := range state.TopoOrder {
+			ts := state.Tasks[id]
+			if ts.Status == TaskStatusLeased || ts.Status == TaskStatusRunning {
+				ts.Status = TaskStatusPending
+				ts.WorkerID = ""
+				ts.LeaseExpiresAtNs = 0
+				ts.StartedAtNs = 0
+				ts.RetryAfterNs = 0
+			}
+		}
+		for _, at := range p.AdoptedTasks {
+			ts, ok := state.Tasks[at.TaskID]
+			if !ok {
+				return fmt.Errorf("%w: %s", ErrTaskNotFound, at.TaskID)
+			}
+			ts.Status = TaskStatusCompleted
+			ts.Output = cloneMap(at.Output)
+			ts.CompletedSeq = ev.Seq
+			ts.WorkerID = ""
+			ts.LeaseExpiresAtNs = 0
+			ts.LastError = ""
+			ts.RetryAfterNs = 0
+		}
+		for _, invID := range p.InvalidatedDownstream {
+			ts, ok := state.Tasks[invID]
+			if !ok {
+				return fmt.Errorf("%w: %s", ErrTaskNotFound, invID)
+			}
+			ts.Status = TaskStatusPending
+			ts.Output = nil
+			ts.WorkerID = ""
+			ts.LeaseExpiresAtNs = 0
+			ts.LastError = ""
+			ts.CompletedSeq = 0
+			ts.StartedAtNs = 0
+			ts.RetryAfterNs = 0
+		}
+		allDone := true
+		for _, id := range state.TopoOrder {
+			if state.Tasks[id].Status != TaskStatusCompleted {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			state.Status = RunStatusCompleted
+		} else {
+			state.Status = RunStatusRunning
+		}
+
 	case EventRunCompleted:
 		state.Status = RunStatusCompleted
 
@@ -595,6 +655,72 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 			}),
 		}
 		return []Event{ev}, nil, nil
+
+	case CmdMergeBranch:
+		if c.NewRunID == "" {
+			return nil, nil, fmt.Errorf("new_run_id is required")
+		}
+		if c.Plan == nil {
+			return nil, nil, fmt.Errorf("merge plan is required")
+		}
+		adoptedSet := make(map[string]struct{}, len(c.Plan.AdoptedTasks))
+		for _, at := range c.Plan.AdoptedTasks {
+			if _, ok := state.Tasks[at.TaskID]; !ok {
+				return nil, nil, fmt.Errorf("%w: %s", ErrTaskNotFound, at.TaskID)
+			}
+			adoptedSet[at.TaskID] = struct{}{}
+		}
+		invalidatedSet := make(map[string]struct{}, len(c.Plan.InvalidatedDownstream))
+		for _, invID := range c.Plan.InvalidatedDownstream {
+			if _, ok := state.Tasks[invID]; !ok {
+				return nil, nil, fmt.Errorf("%w: %s", ErrTaskNotFound, invID)
+			}
+			invalidatedSet[invID] = struct{}{}
+		}
+		mergeEv := Event{
+			RunID:       c.NewRunID,
+			Seq:         nextSeq,
+			TimestampNs: nowNs,
+			Type:        EventTimelineMerged,
+			Payload: mustMarshal(TimelineMergedPayload{
+				BaseRunID:             state.RunID,
+				BranchRunID:           c.Plan.BranchRunID,
+				MergeFromSeq:          state.LastSeq,
+				AdoptedTasks:          c.Plan.AdoptedTasks,
+				InvalidatedDownstream: c.Plan.InvalidatedDownstream,
+			}),
+		}
+		events := []Event{mergeEv}
+		var effects []Effect
+
+		allDone := true
+		for _, id := range state.TopoOrder {
+			if _, inv := invalidatedSet[id]; inv {
+				allDone = false
+				break
+			}
+			if _, adopted := adoptedSet[id]; adopted {
+				continue
+			}
+			if state.Tasks[id].Status != TaskStatusCompleted {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			events = append(events, Event{
+				RunID:       c.NewRunID,
+				Seq:         nextSeq + 1,
+				TimestampNs: nowNs,
+				Type:        EventRunCompleted,
+			})
+			effects = append(effects, Effect{
+				Kind:   EffectRunTerminal,
+				RunID:  c.NewRunID,
+				Status: RunStatusCompleted,
+			})
+		}
+		return events, effects, nil
 
 	default:
 		return nil, nil, fmt.Errorf("unsupported command type %T", cmd)

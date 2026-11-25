@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/creova-gif/chronos-sched/internal/engine"
+	"github.com/creova-gif/chronos-sched/internal/metrics"
 	"github.com/creova-gif/chronos-sched/internal/store"
 )
 
@@ -31,9 +32,10 @@ type activeRun struct {
 // state, lease expiration, fencing verification, SQLite WAL persistence, and
 // bounded SSE live streaming.
 type Coordinator struct {
-	store store.JournalStore
-	cfg   CoordinatorConfig
-	nowFn func() time.Time
+	store   store.JournalStore
+	cfg     CoordinatorConfig
+	nowFn   func() time.Time
+	metrics *metrics.Recorder
 
 	mu      sync.Mutex
 	runs    map[string]*activeRun
@@ -55,6 +57,7 @@ func NewCoordinator(st store.JournalStore, cfg CoordinatorConfig) *Coordinator {
 		store:   st,
 		cfg:     cfg,
 		nowFn:   time.Now,
+		metrics: &metrics.Recorder{},
 		runs:    make(map[string]*activeRun),
 		workers: make(map[string]*WorkerInfo),
 		subs:    make(map[string]map[chan SSEMessage]struct{}),
@@ -188,6 +191,7 @@ func (c *Coordinator) SubmitWorkflow(ctx context.Context, req SubmitWorkflowRequ
 	c.runs[runID] = &activeRun{dag: dag, workflowYAML: req.WorkflowYAML, state: state}
 	c.mu.Unlock()
 
+	c.metrics.IncRunsSubmitted()
 	c.broadcast(runID, evs, state.Status)
 	return SubmitWorkflowResponse{
 		RunID:        runID,
@@ -250,6 +254,7 @@ func (c *Coordinator) ForkRun(ctx context.Context, parentRunID string, req ForkR
 		workflowYAML: ar.workflowYAML,
 		state:        forkState,
 	}
+	c.metrics.IncTimelinesForked()
 	c.broadcast(newRunID, forkEvs, forkState.Status)
 
 	return ForkRunResponse{
@@ -257,6 +262,102 @@ func (c *Coordinator) ForkRun(ctx context.Context, parentRunID string, req ForkR
 		ParentRunID:   parentRunID,
 		ForkFromSeq:   cp.Seq,
 		CheckpointNum: cp.Number,
+	}, nil
+}
+
+// MergeRun plans and materializes a Git-style timeline merge onto a new run
+// derived from baseRunID, adopting completed tasks from branchRunID and
+// invalidating transitive downstream dependents for causal re-execution.
+func (c *Coordinator) MergeRun(ctx context.Context, baseRunID string, req MergeRunRequest) (MergeRunResponse, error) {
+	if strings.TrimSpace(req.BranchRunID) == "" {
+		return MergeRunResponse{}, fmt.Errorf("branch_run_id is required")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	baseAR, err := c.loadRunLocked(ctx, baseRunID)
+	if err != nil {
+		return MergeRunResponse{}, err
+	}
+	baseEvs, err := c.store.LoadRunEvents(ctx, baseRunID)
+	if err != nil {
+		return MergeRunResponse{}, err
+	}
+	branchEvs, err := c.store.LoadRunEvents(ctx, req.BranchRunID)
+	if err != nil {
+		return MergeRunResponse{}, err
+	}
+
+	strategy := engine.MergeFailOnConflict
+	if req.PreferBranch {
+		strategy = engine.MergePreferBranch
+	}
+	plan, err := engine.PlanBranchMerge(baseAR.dag, baseEvs, branchEvs, req.Tasks, strategy)
+	if err != nil {
+		return MergeRunResponse{}, err
+	}
+
+	newRunID := strings.TrimSpace(req.NewRunID)
+	if newRunID == "" {
+		newRunID = fmt.Sprintf("merge_%03d_%d", c.runSeq.Add(1), c.nowFn().UnixNano()%1_000_000)
+	}
+
+	now := c.nowFn()
+	mergeEvs, _, err := engine.Step(baseAR.dag, baseAR.state, engine.CmdMergeBranch{
+		NewRunID: newRunID,
+		Plan:     plan,
+	}, now)
+	if err != nil {
+		return MergeRunResponse{}, err
+	}
+
+	initialStatus := engine.RunStatusRunning
+	for _, ev := range mergeEvs {
+		if ev.Type == engine.EventRunCompleted {
+			initialStatus = engine.RunStatusCompleted
+		}
+	}
+
+	rec := store.RunRecord{
+		RunID:        newRunID,
+		ParentRunID:  baseRunID,
+		ForkFromSeq:  baseAR.state.LastSeq,
+		WorkflowName: baseAR.dag.Spec.Name,
+		WorkflowHash: baseAR.dag.WorkflowHash,
+		WorkflowYAML: baseAR.workflowYAML,
+		Status:       initialStatus,
+		CreatedAtNs:  now.UnixNano(),
+	}
+	if err := c.store.CreateRun(ctx, rec, mergeEvs); err != nil {
+		return MergeRunResponse{}, err
+	}
+
+	allEvs, err := c.store.LoadRunEvents(ctx, newRunID)
+	if err != nil {
+		return MergeRunResponse{}, fmt.Errorf("reload merged run events: %w", err)
+	}
+	mergedState, err := engine.Fold(baseAR.dag, allEvs)
+	if err != nil {
+		return MergeRunResponse{}, fmt.Errorf("fold merged run: %w", err)
+	}
+	c.runs[newRunID] = &activeRun{
+		dag:          baseAR.dag,
+		workflowYAML: baseAR.workflowYAML,
+		state:        mergedState,
+	}
+	c.metrics.IncTimelinesMerged()
+	c.broadcast(newRunID, mergeEvs, mergedState.Status)
+
+	return MergeRunResponse{
+		RunID:                 newRunID,
+		BaseRunID:             baseRunID,
+		BranchRunID:           req.BranchRunID,
+		MergeFromSeq:          baseAR.state.LastSeq,
+		Status:                mergedState.Status,
+		AdoptedCount:          len(plan.AdoptedTasks),
+		InvalidatedDownstream: plan.InvalidatedDownstream,
+		PlanText:              engine.FormatMergePlan(plan),
 	}, nil
 }
 
@@ -335,6 +436,20 @@ func (c *Coordinator) commitEventsLocked(ctx context.Context, ar *activeRun, pre
 		if err := engine.Apply(ar.state, ev); err != nil {
 			return err
 		}
+		switch ev.Type {
+		case engine.EventTaskLeased:
+			c.metrics.IncTasksLeased()
+		case engine.EventTaskCompleted:
+			c.metrics.IncTasksCompleted()
+		case engine.EventTaskFailed:
+			c.metrics.IncTasksFailed()
+		case engine.EventLeaseExpired:
+			c.metrics.IncLeasesExpired()
+		case engine.EventTaskOutcomeAmbiguous:
+			c.metrics.IncAmbiguousOutcomes()
+		case engine.EventStaleFencingToken:
+			c.metrics.IncStaleFencingTokens()
+		}
 	}
 	c.broadcast(ar.state.RunID, evs, ar.state.Status)
 	return nil
@@ -378,11 +493,13 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.Handle("GET /metrics", c.metrics.Handler())
 	mux.HandleFunc("POST /v1/workflows/run", c.handleSubmitWorkflow)
 	mux.HandleFunc("GET /v1/runs", c.handleListRuns)
 	mux.HandleFunc("GET /v1/runs/{id}", c.handleGetRun)
 	mux.HandleFunc("GET /v1/runs/{id}/events", c.handleRunEventsSSE)
 	mux.HandleFunc("POST /v1/runs/{id}/fork", c.handleForkRun)
+	mux.HandleFunc("POST /v1/runs/{id}/merge", c.handleMergeRun)
 	mux.HandleFunc("POST /v1/workers/register", c.handleWorkerRegister)
 	mux.HandleFunc("POST /v1/workers/poll", c.handleWorkerPoll)
 	mux.HandleFunc("POST /v1/workers/heartbeat", c.handleWorkerHeartbeat)
@@ -401,6 +518,27 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 	resp, err := c.SubmitWorkflow(r.Context(), req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {
+	baseID := r.PathValue("id")
+	var req MergeRunRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	resp, err := c.MergeRun(r.Context(), baseID, req)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, store.ErrRunNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, engine.ErrMergeConflict) {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, ErrorResponse{Error: err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
@@ -542,6 +680,7 @@ func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	start := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -589,6 +728,7 @@ func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 		}
 		ev := evs[0]
 		spec := ar.dag.TasksByID[ev.TaskID]
+		c.metrics.ObserveScheduleLatency(time.Since(start))
 		writeJSON(w, http.StatusOK, LeasePollResponse{
 			Lease: &LeasedTask{
 				RunID:        id,

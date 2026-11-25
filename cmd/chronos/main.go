@@ -114,7 +114,7 @@ Usage:
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
   chronos branches [--db .chronos/chronos.db]
-  chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--db .chronos/chronos.db]
+  chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--apply] [--new-run-id id] [--coordinator http://127.0.0.1:7420] [--db .chronos/chronos.db]
 `)
 }
 
@@ -694,7 +694,10 @@ func cmdBranches(args []string) error {
 
 func cmdMerge(args []string) error {
 	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
-	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path (preview mode)")
+	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL (required for --apply)")
+	apply := fs.Bool("apply", false, "materialize the merged timeline via coordinator RPC")
+	newRunID := fs.String("new-run-id", "", "optional run ID for materialized merge (--apply)")
 	preferBranch := fs.Bool("prefer-branch", false, "resolve conflicting outputs by preferring the branch timeline")
 	var tasks multiFlag
 	fs.Var(&tasks, "task", "specific task ID to cherry-pick from branch (repeatable; default all diverging completed tasks)")
@@ -702,9 +705,27 @@ func cmdMerge(args []string) error {
 		return err
 	}
 	if fs.NArg() < 2 {
-		return fmt.Errorf("usage: chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--db %s]", defaultDBPath)
+		return fmt.Errorf("usage: chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--apply] [--db %s]", defaultDBPath)
 	}
 	baseID, branchID := fs.Arg(0), fs.Arg(1)
+
+	if *apply {
+		var resp runtime.MergeRunResponse
+		if err := rpcPost(*coordURL+"/v1/runs/"+baseID+"/merge", runtime.MergeRunRequest{
+			BranchRunID:  branchID,
+			NewRunID:     *newRunID,
+			Tasks:        tasks,
+			PreferBranch: *preferBranch,
+		}, &resp); err != nil {
+			return err
+		}
+		if resp.PlanText != "" {
+			fmt.Print(resp.PlanText)
+		}
+		fmt.Printf("Merged %s + %s -> %s (status=%s, adopted=%d, invalidated=%d)\n",
+			resp.BaseRunID, resp.BranchRunID, resp.RunID, resp.Status, resp.AdoptedCount, len(resp.InvalidatedDownstream))
+		return nil
+	}
 
 	st, err := sqlite.OpenReadOnly(*dbPath)
 	if err != nil {
