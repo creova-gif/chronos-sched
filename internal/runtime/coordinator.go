@@ -21,6 +21,7 @@ type CoordinatorConfig struct {
 	LeaseTTL   time.Duration
 	ReaperTick time.Duration
 	Webhook    *WebhookNotifier
+	AuthToken  string
 }
 
 type activeRun struct {
@@ -529,7 +530,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/tasks/started", c.handleTaskStarted)
 	mux.HandleFunc("POST /v1/tasks/complete", c.handleTaskComplete)
 	mux.HandleFunc("POST /v1/tasks/fail", c.handleTaskFail)
-	return mux
+	return AuthMiddleware(c.cfg.AuthToken, mux)
 }
 
 func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Request) {

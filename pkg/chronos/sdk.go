@@ -14,6 +14,7 @@ type HandlerFunc = runtime.HandlerFunc
 type WorkerConfig struct {
 	WorkerID          string
 	CoordinatorURL    string
+	AuthToken         string
 	Concurrency       int
 	Resources         map[string]int
 	HeartbeatInterval time.Duration
@@ -30,6 +31,7 @@ func NewWorker(cfg WorkerConfig) *Worker {
 		inner: runtime.NewWorker(runtime.WorkerConfig{
 			WorkerID:          cfg.WorkerID,
 			CoordinatorURL:    cfg.CoordinatorURL,
+			AuthToken:         cfg.AuthToken,
 			Concurrency:       cfg.Concurrency,
 			Resources:         cfg.Resources,
 			HeartbeatInterval: cfg.HeartbeatInterval,

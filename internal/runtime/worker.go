@@ -22,6 +22,7 @@ type HandlerFunc func(ctx context.Context, input map[string]any) (map[string]any
 type WorkerConfig struct {
 	WorkerID          string
 	CoordinatorURL    string
+	AuthToken         string
 	Concurrency       int
 	Resources         map[string]int
 	HeartbeatInterval time.Duration
@@ -278,6 +279,9 @@ func (w *Worker) postJSON(ctx context.Context, path string, reqBody any, respBod
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if w.cfg.AuthToken != "" {
+		req.Header.Set("Authorization", "Bearer "+w.cfg.AuthToken)
+	}
 	resp, err := w.client.Do(req)
 	if err != nil {
 		return err

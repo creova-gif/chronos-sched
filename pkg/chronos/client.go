@@ -168,6 +168,7 @@ type errorResponse struct {
 // Client is a typed HTTP client for the ChronosSched Coordinator API.
 type Client struct {
 	baseURL    string
+	authToken  string
 	httpClient *http.Client
 }
 
@@ -179,6 +180,12 @@ func NewClient(baseURL string) *Client {
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// WithBearerToken configures a Bearer token for Authorization headers on API requests.
+func (c *Client) WithBearerToken(token string) *Client {
+	c.authToken = token
+	return c
 }
 
 // Health checks the Coordinator /healthz endpoint.
@@ -283,6 +290,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
