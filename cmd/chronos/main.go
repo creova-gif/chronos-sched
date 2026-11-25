@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/creova-gif/chronos-sched/internal/engine"
+	"github.com/creova-gif/chronos-sched/internal/ha"
 	"github.com/creova-gif/chronos-sched/internal/runtime"
 	"github.com/creova-gif/chronos-sched/internal/store"
 	"github.com/creova-gif/chronos-sched/internal/store/sqlite"
@@ -87,6 +89,8 @@ func run(args []string) error {
 		return cmdDiff(args[1:])
 	case "branches":
 		return cmdBranches(args[1:])
+	case "merge":
+		return cmdMerge(args[1:])
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -101,8 +105,8 @@ func printUsage() {
 Usage:
   chronos init [--dir .chronos]
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
-  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db]
-  chronos worker start [--coordinator http://127.0.0.1:7420] [--concurrency 8] [--worker-id id]
+  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s]
+  chronos worker start [--coordinator http://127.0.0.1:7420] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
   chronos history <run_id> [--db .chronos/chronos.db]
@@ -110,6 +114,7 @@ Usage:
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
   chronos branches [--db .chronos/chronos.db]
+  chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--db .chronos/chronos.db]
 `)
 }
 
@@ -328,39 +333,75 @@ func cmdServerStart(args []string) error {
 	fs := flag.NewFlagSet("server start", flag.ContinueOnError)
 	addr := fs.String("addr", defaultCoordAddr, "HTTP listen address")
 	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	haID := fs.String("ha-id", "", "optional HA candidate ID to enable active-standby leader election")
+	haTTL := fs.Duration("ha-ttl", 5*time.Second, "leader lease TTL when --ha-id is set")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	st, err := sqlite.Open(*dbPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	coord := runtime.NewCoordinator(st, runtime.CoordinatorConfig{
-		LeaseTTL:   engine.DefaultLeaseTTL,
-		ReaperTick: engine.DefaultReaperTick,
-	})
-	if err := coord.Recover(ctx); err != nil {
-		return fmt.Errorf("recover coordinator state: %w", err)
-	}
-	go coord.StartReaper(ctx)
+	serveOnce := func(runCtx context.Context, epoch int64) error {
+		st, err := sqlite.Open(*dbPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
 
-	srv := &http.Server{Addr: *addr, Handler: coord.Handler(), ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shutCtx)
-	}()
+		coord := runtime.NewCoordinator(st, runtime.CoordinatorConfig{
+			LeaseTTL:   engine.DefaultLeaseTTL,
+			ReaperTick: engine.DefaultReaperTick,
+		})
+		if err := coord.Recover(runCtx); err != nil {
+			return fmt.Errorf("recover coordinator state: %w", err)
+		}
+		go coord.StartReaper(runCtx)
 
-	fmt.Printf("ChronosSched coordinator listening on http://%s (db: %s)\n", *addr, *dbPath)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
+		srv := &http.Server{Addr: *addr, Handler: coord.Handler(), ReadHeaderTimeout: 5 * time.Second}
+		go func() {
+			<-runCtx.Done()
+			shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = srv.Shutdown(shutCtx)
+		}()
+
+		if epoch > 0 {
+			fmt.Printf("ChronosSched HA leader (%s, epoch=%d) listening on http://%s (db: %s)\n", *haID, epoch, *addr, *dbPath)
+		} else {
+			fmt.Printf("ChronosSched coordinator listening on http://%s (db: %s)\n", *addr, *dbPath)
+		}
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			return err
+		}
+		return nil
 	}
+
+	if strings.TrimSpace(*haID) == "" {
+		return serveOnce(ctx, 0)
+	}
+
+	elector, err := ha.OpenSQLiteElector(*dbPath, ha.DefaultLockName)
+	if err != nil {
+		return fmt.Errorf("open HA elector: %w", err)
+	}
+	defer func() { _ = elector.Close() }()
+
+	renewInterval := *haTTL / 3
+	if renewInterval < 250*time.Millisecond {
+		renewInterval = 250 * time.Millisecond
+	}
+	fmt.Printf("ChronosSched coordinator %q entering HA standby (ttl=%s, db=%s)\n", *haID, *haTTL, *dbPath)
+	ha.RunLeaderLoop(ctx, elector, *haID, *haTTL, renewInterval,
+		func(leaderCtx context.Context, lease ha.LeaderLease) {
+			if err := serveOnce(leaderCtx, lease.Epoch); err != nil && leaderCtx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "chronos leader server error: %v\n", err)
+			}
+		},
+		func() {
+			fmt.Fprintf(os.Stderr, "chronos coordinator %q lost leadership; returning to standby\n", *haID)
+		},
+	)
 	return nil
 }
 
@@ -369,7 +410,12 @@ func cmdWorkerStart(args []string) error {
 	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
 	concurrency := fs.Int("concurrency", 8, "concurrent task execution slots")
 	workerID := fs.String("worker-id", "", "worker ID (defaults to worker-<pid>)")
+	resourcesRaw := fs.String("resources", "", "optional worker resource capacity (e.g. cpu=4,mem_mb=1024)")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	resources, err := parseResources(*resourcesRaw)
+	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -380,8 +426,34 @@ func cmdWorkerStart(args []string) error {
 		CoordinatorURL:    *coordURL,
 		Concurrency:       *concurrency,
 		HeartbeatInterval: engine.DefaultHeartbeatInterval,
+		Resources:         resources,
 	})
 	return w.Run(ctx)
+}
+
+func parseResources(raw string) (map[string]int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	out := make(map[string]int)
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		eq := strings.IndexByte(part, '=')
+		if eq <= 0 || eq == len(part)-1 {
+			return nil, fmt.Errorf("invalid resource %q (expected key=int)", part)
+		}
+		k := strings.TrimSpace(part[:eq])
+		v, err := strconv.Atoi(strings.TrimSpace(part[eq+1:]))
+		if err != nil || v < 0 {
+			return nil, fmt.Errorf("invalid resource quantity for %q: must be non-negative integer", k)
+		}
+		out[k] = v
+	}
+	return out, nil
 }
 
 func parseFlagsAnyOrder(fs *flag.FlagSet, args []string) error {
@@ -617,6 +689,61 @@ func cmdBranches(args []string) error {
 		return err
 	}
 	fmt.Println(store.FormatBranchTree(runs))
+	return nil
+}
+
+func cmdMerge(args []string) error {
+	fs := flag.NewFlagSet("merge", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	preferBranch := fs.Bool("prefer-branch", false, "resolve conflicting outputs by preferring the branch timeline")
+	var tasks multiFlag
+	fs.Var(&tasks, "task", "specific task ID to cherry-pick from branch (repeatable; default all diverging completed tasks)")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--db %s]", defaultDBPath)
+	}
+	baseID, branchID := fs.Arg(0), fs.Arg(1)
+
+	st, err := sqlite.OpenReadOnly(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	baseRec, err := st.GetRun(ctx, baseID)
+	if err != nil {
+		return err
+	}
+	dag, err := engine.ParseDAG([]byte(baseRec.WorkflowYAML))
+	if err != nil {
+		return err
+	}
+	baseEvs, err := st.LoadRunEvents(ctx, baseID)
+	if err != nil {
+		return err
+	}
+	branchEvs, err := st.LoadRunEvents(ctx, branchID)
+	if err != nil {
+		return err
+	}
+
+	strategy := engine.MergeFailOnConflict
+	if *preferBranch {
+		strategy = engine.MergePreferBranch
+	}
+	plan, err := engine.PlanBranchMerge(dag, baseEvs, branchEvs, tasks, strategy)
+	if plan != nil {
+		fmt.Print(engine.FormatMergePlan(plan))
+	}
+	if err != nil {
+		if errors.Is(err, engine.ErrMergeConflict) {
+			return fmt.Errorf("%w (re-run with --prefer-branch to adopt branch outputs)", err)
+		}
+		return err
+	}
 	return nil
 }
 

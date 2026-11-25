@@ -272,6 +272,7 @@ func (c *Coordinator) Snapshot(ctx context.Context, runID string) (RunSnapshotRe
 	workers := make([]WorkerInfo, 0, len(c.workers))
 	for _, w := range c.workers {
 		cp := *w
+		cp.Resources = cloneResources(w.Resources)
 		cp.Alive = now-w.LastHeartbeat <= c.cfg.LeaseTTL.Nanoseconds()
 		workers = append(workers, cp)
 	}
@@ -459,10 +460,17 @@ func (c *Coordinator) handleWorkerRegister(w http.ResponseWriter, r *http.Reques
 	}
 	c.mu.Lock()
 	now := c.nowFn()
+	res := cloneResources(req.Resources)
+	if len(res) == 0 {
+		if prev, ok := c.workers[req.WorkerID]; ok {
+			res = cloneResources(prev.Resources)
+		}
+	}
 	c.workers[req.WorkerID] = &WorkerInfo{
 		WorkerID:      req.WorkerID,
 		PID:           req.PID,
 		Concurrency:   req.Concurrency,
+		Resources:     res,
 		LastHeartbeat: now.UnixNano(),
 		Alive:         true,
 	}
@@ -483,10 +491,17 @@ func (c *Coordinator) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Reque
 	}
 	c.mu.Lock()
 	now := c.nowFn()
+	res := cloneResources(req.Resources)
+	if len(res) == 0 {
+		if prev, ok := c.workers[req.WorkerID]; ok {
+			res = cloneResources(prev.Resources)
+		}
+	}
 	c.workers[req.WorkerID] = &WorkerInfo{
 		WorkerID:      req.WorkerID,
 		PID:           req.PID,
 		Concurrency:   req.Concurrency,
+		Resources:     res,
 		LastHeartbeat: now.UnixNano(),
 		Alive:         true,
 	}
@@ -531,10 +546,18 @@ func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 	defer c.mu.Unlock()
 
 	now := c.nowFn()
+	var declaredResources map[string]int
 	if wi, ok := c.workers[req.WorkerID]; ok {
 		wi.LastHeartbeat = now.UnixNano()
 		wi.Alive = true
+		if len(req.Resources) > 0 {
+			wi.Resources = cloneResources(req.Resources)
+		}
+		declaredResources = wi.Resources
+	} else if len(req.Resources) > 0 {
+		declaredResources = req.Resources
 	}
+	availableResources := c.availableWorkerResourcesLocked(req.WorkerID, declaredResources)
 
 	// Deterministic run iteration order.
 	runIDs := make([]string, 0, len(c.runs))
@@ -549,8 +572,9 @@ func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 		ar := c.runs[id]
 		prevSeq := ar.state.LastSeq
 		evs, _, err := engine.Step(ar.dag, ar.state, engine.CmdLeaseNextTask{
-			WorkerID: req.WorkerID,
-			LeaseTTL: c.cfg.LeaseTTL,
+			WorkerID:           req.WorkerID,
+			LeaseTTL:           c.cfg.LeaseTTL,
+			AvailableResources: availableResources,
 		}, now)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
@@ -704,6 +728,45 @@ func (c *Coordinator) handleRunEventsSSE(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		}
 	}
+}
+
+func (c *Coordinator) availableWorkerResourcesLocked(workerID string, declared map[string]int) map[string]int {
+	if len(declared) == 0 {
+		return nil
+	}
+	avail := cloneResources(declared)
+	for _, ar := range c.runs {
+		if ar.state.Status != engine.RunStatusRunning {
+			continue
+		}
+		for taskID, ts := range ar.state.Tasks {
+			if ts.WorkerID != workerID {
+				continue
+			}
+			if ts.Status != engine.TaskStatusLeased && ts.Status != engine.TaskStatusRunning {
+				continue
+			}
+			spec, ok := ar.dag.TasksByID[taskID]
+			if !ok {
+				continue
+			}
+			for k, reqAmt := range spec.Resources {
+				avail[k] -= reqAmt
+			}
+		}
+	}
+	return avail
+}
+
+func cloneResources(src map[string]int) map[string]int {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]int, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

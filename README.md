@@ -14,10 +14,15 @@ chronos demo --workers 5
 chronos history run_001
 chronos replay run_001
 
-# Fork an isolated timeline from an earlier checkpoint, diff, and inspect lineage
+# Fork an isolated timeline from an earlier checkpoint, diff, merge-plan, and inspect lineage
 chronos fork run_001 --checkpoint 3 --override task.key=value
 chronos diff run_001 run_002
+chronos merge run_001 run_002 --prefer-branch
 chronos branches
+
+# Active-standby HA coordinator + resource-constrained workers
+chronos server start --ha-id coord-1 --ha-ttl 5s
+chronos worker start --concurrency 4 --resources cpu=4,mem_mb=1024
 ```
 
 ## Measured Local Performance (Apple M5, darwin/arm64)
@@ -38,5 +43,8 @@ chronos branches
 
 - [Milestone 1 Design & Engineering Review](docs/designs/chronos-sched-m1.md)
 - [ADR-001: Event Journal, SQLite WAL & Fencing Model](docs/adr/001-event-journal-sqlite-fencing.md)
+- [ADR-002: Programmable Scheduling Constraints](docs/adr/002-programmable-scheduling-constraints.md)
+- [ADR-003: Timeline Merge & Cherry-Pick](docs/adr/003-timeline-merge-and-cherry-pick.md)
+- [ADR-004: Coordinator HA Leader Lease](docs/adr/004-coordinator-ha-leader-lease.md)
 - [Threat Model](docs/THREAT_MODEL.md)
 - [Engineering Standards](AGENTS.md)

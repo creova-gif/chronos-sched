@@ -47,3 +47,23 @@ func TestParseOverrides(t *testing.T) {
 		t.Fatalf("expected error on missing '.'")
 	}
 }
+
+func TestParseResources(t *testing.T) {
+	t.Parallel()
+	got, err := parseResources("cpu=4, mem_mb=1024")
+	if err != nil {
+		t.Fatalf("parseResources valid: %v", err)
+	}
+	if got["cpu"] != 4 || got["mem_mb"] != 1024 {
+		t.Fatalf("unexpected resources: %+v", got)
+	}
+	if gotNil, err := parseResources(""); err != nil || gotNil != nil {
+		t.Fatalf("expected nil for empty resources, got %v err=%v", gotNil, err)
+	}
+	if _, err := parseResources("cpu=-1"); err == nil {
+		t.Fatalf("expected error for negative resource")
+	}
+	if _, err := parseResources("badformat"); err == nil {
+		t.Fatalf("expected error for malformed resource")
+	}
+}

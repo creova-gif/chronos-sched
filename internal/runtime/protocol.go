@@ -9,11 +9,12 @@ type ActiveLease struct {
 }
 
 type WorkerInfo struct {
-	WorkerID      string `json:"worker_id"`
-	PID           int    `json:"pid"`
-	Concurrency   int    `json:"concurrency"`
-	LastHeartbeat int64  `json:"last_heartbeat_ns"`
-	Alive         bool   `json:"alive"`
+	WorkerID      string         `json:"worker_id"`
+	PID           int            `json:"pid"`
+	Concurrency   int            `json:"concurrency"`
+	Resources     map[string]int `json:"resources,omitempty"`
+	LastHeartbeat int64          `json:"last_heartbeat_ns"`
+	Alive         bool           `json:"alive"`
 }
 
 type SubmitWorkflowRequest struct {
@@ -41,10 +42,11 @@ type ForkRunResponse struct {
 }
 
 type WorkerRegisterRequest struct {
-	WorkerID     string        `json:"worker_id"`
-	PID          int           `json:"pid"`
-	Concurrency  int           `json:"concurrency"`
-	ActiveLeases []ActiveLease `json:"active_leases,omitempty"`
+	WorkerID     string         `json:"worker_id"`
+	PID          int            `json:"pid"`
+	Concurrency  int            `json:"concurrency"`
+	Resources    map[string]int `json:"resources,omitempty"`
+	ActiveLeases []ActiveLease  `json:"active_leases,omitempty"`
 }
 
 type WorkerRegisterResponse struct {
@@ -52,7 +54,8 @@ type WorkerRegisterResponse struct {
 }
 
 type LeasePollRequest struct {
-	WorkerID string `json:"worker_id"`
+	WorkerID  string         `json:"worker_id"`
+	Resources map[string]int `json:"resources,omitempty"`
 }
 
 type LeasedTask struct {
@@ -70,10 +73,11 @@ type LeasePollResponse struct {
 }
 
 type HeartbeatRequest struct {
-	WorkerID     string        `json:"worker_id"`
-	PID          int           `json:"pid"`
-	Concurrency  int           `json:"concurrency"`
-	ActiveLeases []ActiveLease `json:"active_leases,omitempty"`
+	WorkerID     string         `json:"worker_id"`
+	PID          int            `json:"pid"`
+	Concurrency  int            `json:"concurrency"`
+	Resources    map[string]int `json:"resources,omitempty"`
+	ActiveLeases []ActiveLease  `json:"active_leases,omitempty"`
 }
 
 type HeartbeatResponse struct {

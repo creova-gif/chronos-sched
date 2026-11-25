@@ -15,6 +15,7 @@ type WorkerConfig struct {
 	WorkerID          string
 	CoordinatorURL    string
 	Concurrency       int
+	Resources         map[string]int
 	HeartbeatInterval time.Duration
 }
 
@@ -30,6 +31,7 @@ func NewWorker(cfg WorkerConfig) *Worker {
 			WorkerID:          cfg.WorkerID,
 			CoordinatorURL:    cfg.CoordinatorURL,
 			Concurrency:       cfg.Concurrency,
+			Resources:         cfg.Resources,
 			HeartbeatInterval: cfg.HeartbeatInterval,
 		}),
 	}

@@ -23,6 +23,7 @@ type WorkerConfig struct {
 	WorkerID          string
 	CoordinatorURL    string
 	Concurrency       int
+	Resources         map[string]int
 	HeartbeatInterval time.Duration
 	PollInterval      time.Duration
 }
@@ -57,6 +58,7 @@ func NewWorker(cfg WorkerConfig) *Worker {
 		cfg.PollInterval = 50 * time.Millisecond
 	}
 	cfg.CoordinatorURL = strings.TrimRight(cfg.CoordinatorURL, "/")
+	cfg.Resources = cloneResources(cfg.Resources)
 
 	w := &Worker{
 		cfg:      cfg,
@@ -118,6 +120,7 @@ func (w *Worker) register(ctx context.Context) error {
 		WorkerID:     w.cfg.WorkerID,
 		PID:          os.Getpid(),
 		Concurrency:  w.cfg.Concurrency,
+		Resources:    w.cfg.Resources,
 		ActiveLeases: w.snapshotActiveLeases(),
 	}
 	var resp WorkerRegisterResponse
@@ -136,6 +139,7 @@ func (w *Worker) heartbeatLoop(ctx context.Context) {
 				WorkerID:     w.cfg.WorkerID,
 				PID:          os.Getpid(),
 				Concurrency:  w.cfg.Concurrency,
+				Resources:    w.cfg.Resources,
 				ActiveLeases: w.snapshotActiveLeases(),
 			}
 			var resp HeartbeatResponse
@@ -158,7 +162,10 @@ func (w *Worker) pollLoop(ctx context.Context) {
 		}
 
 		var resp LeasePollResponse
-		if err := w.postJSON(ctx, "/v1/workers/poll", LeasePollRequest{WorkerID: w.cfg.WorkerID}, &resp); err != nil || resp.Lease == nil {
+		if err := w.postJSON(ctx, "/v1/workers/poll", LeasePollRequest{
+			WorkerID:  w.cfg.WorkerID,
+			Resources: w.cfg.Resources,
+		}, &resp); err != nil || resp.Lease == nil {
 			select {
 			case <-ctx.Done():
 				return

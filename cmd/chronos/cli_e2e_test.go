@@ -143,4 +143,9 @@ tasks:
 	if !strings.Contains(branchOut, "run_cli_1") || !strings.Contains(branchOut, "run_cli_2") {
 		t.Fatalf("expected both runs in branches tree:\n%s", branchOut)
 	}
+
+	mergeOut := runCLI("merge", "run_cli_1", "run_cli_2", "--prefer-branch", "--db", dbPath)
+	if !strings.Contains(mergeOut, "step2") {
+		t.Fatalf("expected step2 in merge plan:\n%s", mergeOut)
+	}
 }
