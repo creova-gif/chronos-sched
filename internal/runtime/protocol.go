@@ -41,6 +41,24 @@ type ForkRunResponse struct {
 	CheckpointNum int    `json:"checkpoint_num"`
 }
 
+type MergeRunRequest struct {
+	BranchRunID  string   `json:"branch_run_id"`
+	NewRunID     string   `json:"new_run_id,omitempty"`
+	Tasks        []string `json:"tasks,omitempty"`
+	PreferBranch bool     `json:"prefer_branch,omitempty"`
+}
+
+type MergeRunResponse struct {
+	RunID                 string           `json:"run_id"`
+	BaseRunID             string           `json:"base_run_id"`
+	BranchRunID           string           `json:"branch_run_id"`
+	MergeFromSeq          int64            `json:"merge_from_seq"`
+	Status                engine.RunStatus `json:"status"`
+	AdoptedCount          int              `json:"adopted_count"`
+	InvalidatedDownstream []string         `json:"invalidated_downstream,omitempty"`
+	PlanText              string           `json:"plan_text"`
+}
+
 type WorkerRegisterRequest struct {
 	WorkerID     string         `json:"worker_id"`
 	PID          int            `json:"pid"`

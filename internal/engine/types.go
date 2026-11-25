@@ -34,6 +34,7 @@ const (
 	EventTaskOutcomeAmbiguous EventType = "TASK_OUTCOME_AMBIGUOUS"
 	EventStaleFencingToken    EventType = "STALE_FENCING_TOKEN"
 	EventTimelineForked       EventType = "TIMELINE_FORKED"
+	EventTimelineMerged       EventType = "TIMELINE_MERGED"
 	EventRunCompleted         EventType = "RUN_COMPLETED"
 	EventRunFailed            EventType = "RUN_FAILED"
 )
@@ -141,6 +142,14 @@ type TimelineForkedPayload struct {
 	Overrides      map[string]map[string]any `json:"overrides,omitempty"`
 }
 
+type TimelineMergedPayload struct {
+	BaseRunID             string        `json:"base_run_id"`
+	BranchRunID           string        `json:"branch_run_id"`
+	MergeFromSeq          int64         `json:"merge_from_seq"`
+	AdoptedTasks          []AdoptedTask `json:"adopted_tasks,omitempty"`
+	InvalidatedDownstream []string      `json:"invalidated_downstream,omitempty"`
+}
+
 type RunFailedPayload struct {
 	Reason string `json:"reason"`
 }
@@ -227,6 +236,11 @@ type CmdForkRun struct {
 	Overrides          map[string]map[string]any
 }
 
+type CmdMergeBranch struct {
+	NewRunID string
+	Plan     *MergePlan
+}
+
 func (CmdStartRun) isCommand()        {}
 func (CmdLeaseNextTask) isCommand()   {}
 func (CmdMarkTaskStarted) isCommand() {}
@@ -234,6 +248,7 @@ func (CmdCompleteTask) isCommand()    {}
 func (CmdFailTask) isCommand()        {}
 func (CmdExpireLeases) isCommand()    {}
 func (CmdForkRun) isCommand()         {}
+func (CmdMergeBranch) isCommand()     {}
 
 type EffectKind string
 
