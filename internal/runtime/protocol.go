@@ -139,3 +139,12 @@ type SSEMessage struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+type RunLifecycleRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+type RunLifecycleResponse struct {
+	RunID  string           `json:"run_id"`
+	Status engine.RunStatus `json:"status"`
+}

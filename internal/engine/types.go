@@ -37,6 +37,9 @@ const (
 	EventTimelineMerged       EventType = "TIMELINE_MERGED"
 	EventRunCompleted         EventType = "RUN_COMPLETED"
 	EventRunFailed            EventType = "RUN_FAILED"
+	EventRunPaused            EventType = "RUN_PAUSED"
+	EventRunResumed           EventType = "RUN_RESUMED"
+	EventRunCancelled         EventType = "RUN_CANCELLED"
 )
 
 type RunStatus string
@@ -44,8 +47,10 @@ type RunStatus string
 const (
 	RunStatusPending   RunStatus = "PENDING"
 	RunStatusRunning   RunStatus = "RUNNING"
+	RunStatusPaused    RunStatus = "PAUSED"
 	RunStatusCompleted RunStatus = "COMPLETED"
 	RunStatusFailed    RunStatus = "FAILED"
+	RunStatusCancelled RunStatus = "CANCELLED"
 )
 
 type TaskStatus string
@@ -154,6 +159,10 @@ type RunFailedPayload struct {
 	Reason string `json:"reason"`
 }
 
+type RunLifecyclePayload struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 type CheckpointInfo struct {
 	Number int    `json:"number"`
 	Name   string `json:"name,omitempty"`
@@ -241,6 +250,18 @@ type CmdMergeBranch struct {
 	Plan     *MergePlan
 }
 
+type CmdPauseRun struct {
+	Reason string
+}
+
+type CmdResumeRun struct {
+	Reason string
+}
+
+type CmdCancelRun struct {
+	Reason string
+}
+
 func (CmdStartRun) isCommand()        {}
 func (CmdLeaseNextTask) isCommand()   {}
 func (CmdMarkTaskStarted) isCommand() {}
@@ -249,6 +270,9 @@ func (CmdFailTask) isCommand()        {}
 func (CmdExpireLeases) isCommand()    {}
 func (CmdForkRun) isCommand()         {}
 func (CmdMergeBranch) isCommand()     {}
+func (CmdPauseRun) isCommand()        {}
+func (CmdResumeRun) isCommand()       {}
+func (CmdCancelRun) isCommand()       {}
 
 type EffectKind string
 

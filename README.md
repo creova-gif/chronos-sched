@@ -20,9 +20,14 @@ chronos diff run_001 run_002
 chronos merge run_001 run_002 --prefer-branch --apply
 chronos branches
 
-# Active-standby HA coordinator (exposes Prometheus /metrics) + resource-constrained workers
-chronos server start --ha-id coord-1 --ha-ttl 5s
-chronos worker start --concurrency 4 --resources cpu=4,mem_mb=1024
+# Export portable SHA-256 flight-recorder bundles and Perfetto / Chrome Trace timelines
+chronos export run_001 -o crash.bundle.json
+chronos import crash.bundle.json --run-id run_repro
+chronos trace run_001 -o trace.json
+
+# Recurring deterministic cron schedules and live lifecycle controls
+chronos schedule add nightly --cron "0 2 * * *" --workflow pipeline.yaml
+chronos workflow pause run_001 && chronos workflow resume run_001
 ```
 
 ## Measured Local Performance (Apple M5, darwin/arm64)
@@ -47,6 +52,8 @@ chronos worker start --concurrency 4 --resources cpu=4,mem_mb=1024
 - [ADR-003: Timeline Merge & Cherry-Pick](docs/adr/003-timeline-merge-and-cherry-pick.md)
 - [ADR-004: Coordinator HA Leader Lease](docs/adr/004-coordinator-ha-leader-lease.md)
 - [ADR-005: Prometheus Metrics & Observability](docs/adr/005-prometheus-metrics-and-observability.md)
+- [ADR-006: Deterministic Cron Schedules](docs/adr/006-deterministic-cron-schedules.md)
+- [ADR-007: Flight-Recorder Bundle & Perfetto Trace](docs/adr/007-flight-recorder-bundle-and-perfetto-trace.md)
 - [CHANGELOG](CHANGELOG.md)
 - [Threat Model](docs/THREAT_MODEL.md)
 - [Engineering Standards](AGENTS.md)
