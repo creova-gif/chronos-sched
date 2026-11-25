@@ -89,6 +89,8 @@ func run(args []string) error {
 		}
 	case "history":
 		return cmdHistory(args[1:])
+	case "inspect-at":
+		return cmdInspectAt(args[1:])
 	case "replay":
 		return cmdReplay(args[1:])
 	case "fork":
@@ -128,12 +130,13 @@ func printUsage() {
 Usage:
   chronos init [--dir .chronos]
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
-  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--webhook-url url] [--webhook-secret sec]
-  chronos worker start [--coordinator http://127.0.0.1:7420] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
+  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec]
+  chronos worker start [--coordinator http://127.0.0.1:7420] [--auth-token tok] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
   chronos workflow <pause|resume|cancel> <run_id> [--reason text] [--coordinator http://127.0.0.1:7420]
-  chronos history <run_id> [--redact] [--db .chronos/chronos.db]
+  chronos history <run_id> [--task id] [--worker id] [--type EVENT] [--min-seq N] [--max-seq N] [--redact] [--db .chronos/chronos.db]
+  chronos inspect-at <run_id> (--checkpoint <N|name> | --seq <N>) [--db .chronos/chronos.db]
   chronos replay <run_id> [--dry-run] [--db .chronos/chronos.db]
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
@@ -399,6 +402,7 @@ func cmdServerStart(args []string) error {
 	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
 	haID := fs.String("ha-id", "", "optional HA candidate ID to enable active-standby leader election")
 	haTTL := fs.Duration("ha-ttl", 5*time.Second, "leader lease TTL when --ha-id is set")
+	authToken := fs.String("auth-token", os.Getenv("CHRONOS_AUTH_TOKEN"), "optional Bearer token for Coordinator API auth")
 	webhookURL := fs.String("webhook-url", "", "optional webhook URL for terminal run notifications")
 	webhookSecret := fs.String("webhook-secret", "", "optional HMAC-SHA256 secret for webhook signing")
 	if err := fs.Parse(args); err != nil {
@@ -434,6 +438,7 @@ func cmdServerStart(args []string) error {
 		coord := runtime.NewCoordinator(st, runtime.CoordinatorConfig{
 			LeaseTTL:   engine.DefaultLeaseTTL,
 			ReaperTick: engine.DefaultReaperTick,
+			AuthToken:  *authToken,
 			Webhook:    notifier,
 		})
 		if err := coord.Recover(runCtx); err != nil {
@@ -503,6 +508,7 @@ func cmdServerStart(args []string) error {
 func cmdWorkerStart(args []string) error {
 	fs := flag.NewFlagSet("worker start", flag.ContinueOnError)
 	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+	authToken := fs.String("auth-token", os.Getenv("CHRONOS_AUTH_TOKEN"), "optional Bearer token for Coordinator API auth")
 	concurrency := fs.Int("concurrency", 8, "concurrent task execution slots")
 	workerID := fs.String("worker-id", "", "worker ID (defaults to worker-<pid>)")
 	resourcesRaw := fs.String("resources", "", "optional worker resource capacity (e.g. cpu=4,mem_mb=1024)")
@@ -519,6 +525,7 @@ func cmdWorkerStart(args []string) error {
 	w := runtime.NewWorker(runtime.WorkerConfig{
 		WorkerID:          *workerID,
 		CoordinatorURL:    *coordURL,
+		AuthToken:         *authToken,
 		Concurrency:       *concurrency,
 		HeartbeatInterval: engine.DefaultHeartbeatInterval,
 		Resources:         resources,
@@ -713,12 +720,17 @@ func cmdWorkflowInspect(args []string) error {
 func cmdHistory(args []string) error {
 	fs := flag.NewFlagSet("history", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	taskID := fs.String("task", "", "filter by task ID")
+	workerID := fs.String("worker", "", "filter by worker ID")
+	evType := fs.String("type", "", "filter by event type (e.g. TASK_COMPLETED)")
+	minSeq := fs.Int64("min-seq", 0, "minimum event seq")
+	maxSeq := fs.Int64("max-seq", 0, "maximum event seq")
 	redact := fs.Bool("redact", false, "redact sensitive keys (secrets, tokens, passwords) in output")
 	if err := parseFlagsAnyOrder(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() < 1 {
-		return fmt.Errorf("usage: chronos history <run_id> [--redact] [--db %s]", defaultDBPath)
+		return fmt.Errorf("usage: chronos history <run_id> [--task id] [--worker id] [--type EVENT] [--redact] [--db %s]", defaultDBPath)
 	}
 	runID := fs.Arg(0)
 
@@ -732,6 +744,13 @@ func cmdHistory(args []string) error {
 	if err != nil {
 		return err
 	}
+	evs = engine.FilterEvents(evs, engine.EventFilter{
+		TaskID:    *taskID,
+		WorkerID:  *workerID,
+		EventType: engine.EventType(*evType),
+		MinSeq:    *minSeq,
+		MaxSeq:    *maxSeq,
+	})
 	if *redact {
 		evs = engine.RedactEvents(evs)
 	}
@@ -739,6 +758,56 @@ func cmdHistory(args []string) error {
 		fmt.Printf("%04d  %-22s  task=%-14s  att=%d  tok=%d  worker=%-10s  %s\n",
 			ev.Seq, ev.Type, ev.TaskID, ev.Attempt, ev.FencingToken, ev.WorkerID, string(ev.Payload))
 	}
+	return nil
+}
+
+func cmdInspectAt(args []string) error {
+	fs := flag.NewFlagSet("inspect-at", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	checkpoint := fs.String("checkpoint", "", "checkpoint number (N) or YAML checkpoint_name")
+	seq := fs.Int64("seq", 0, "exact event sequence number")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 || (*checkpoint == "" && *seq <= 0) {
+		return fmt.Errorf("usage: chronos inspect-at <run_id> (--checkpoint <N|name> | --seq <N>) [--db %s]", defaultDBPath)
+	}
+	runID := fs.Arg(0)
+
+	st, err := sqlite.OpenReadOnly(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	ctx := context.Background()
+	rec, err := st.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	dag, err := engine.ParseDAG([]byte(rec.WorkflowYAML))
+	if err != nil {
+		return err
+	}
+	evs, err := st.LoadRunEvents(ctx, runID)
+	if err != nil {
+		return err
+	}
+
+	var state *engine.RunState
+	if *checkpoint != "" {
+		state, _, err = engine.StateAtCheckpoint(dag, evs, *checkpoint)
+	} else {
+		state, err = engine.StateAtSeq(dag, evs, *seq)
+	}
+	if err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(b))
 	return nil
 }
 
@@ -1269,8 +1338,16 @@ func rpcPost(url string, reqBody any, respBody any) error {
 	if err != nil {
 		return err
 	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewReader(raw))
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -1286,8 +1363,15 @@ func rpcPost(url string, reqBody any, respBody any) error {
 }
 
 func rpcGet(url string, respBody any) error {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(url)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

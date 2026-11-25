@@ -224,4 +224,14 @@ tasks:
 	if !strings.Contains(docOut, "[PASS] sqlite_integrity") {
 		t.Fatalf("unexpected doctor output:\n%s", docOut)
 	}
+
+	// 10. Filtered history & time-travel inspect-at.
+	filtHist := runCLI("history", "run_cli_1", "--task", "step1", "--type", "TASK_COMPLETED", "--db", dbPath)
+	if !strings.Contains(filtHist, "step1") || strings.Contains(filtHist, "step2") {
+		t.Fatalf("unexpected filtered history:\n%s", filtHist)
+	}
+	inspectAt := runCLI("inspect-at", "run_cli_1", "--checkpoint", "cp_one", "--db", dbPath)
+	if !strings.Contains(inspectAt, `"status": "RUNNING"`) {
+		t.Fatalf("expected intermediate RUNNING state at cp_one:\n%s", inspectAt)
+	}
 }

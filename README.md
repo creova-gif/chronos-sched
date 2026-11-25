@@ -30,6 +30,7 @@ chronos schedule add nightly --cron "0 2 * * *" --workflow pipeline.yaml
 chronos workflow pause run_001 && chronos workflow resume run_001
 chronos gc --older-than 168h --dry-run
 chronos doctor
+chronos inspect-at run_001 --checkpoint 3
 ```
 
 ## Measured Local Performance (Apple M5, darwin/arm64)
@@ -58,6 +59,7 @@ chronos doctor
 - [ADR-007: Flight-Recorder Bundle & Perfetto Trace](docs/adr/007-flight-recorder-bundle-and-perfetto-trace.md)
 - [ADR-008: Journal Retention & Compaction](docs/adr/008-journal-retention-and-compaction.md)
 - [ADR-009: Webhook Notifications & Retries](docs/adr/009-webhook-notifications-and-retries.md)
+- [ADR-010: Coordinator Bearer Auth](docs/adr/010-coordinator-bearer-auth.md)
 - [OpenAPI 3.1 Specification](docs/api/openapi.yaml)
 - [CHANGELOG](CHANGELOG.md)
 - [Threat Model](docs/THREAT_MODEL.md)
