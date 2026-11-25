@@ -234,4 +234,10 @@ tasks:
 	if !strings.Contains(inspectAt, `"status": "RUNNING"`) {
 		t.Fatalf("expected intermediate RUNNING state at cp_one:\n%s", inspectAt)
 	}
+
+	// 11. Dead-letter queue list on read-only store.
+	dlqOut := runCLI("dlq", "list", "--db", dbPath)
+	if !strings.Contains(dlqOut, "No dead-letter entries.") {
+		t.Fatalf("unexpected dlq list output:\n%s", dlqOut)
+	}
 }

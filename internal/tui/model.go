@@ -27,6 +27,7 @@ type Config struct {
 	OnPauseResume      func(runID string, pause bool) (string, error)
 	OnCancel           func(runID string) (string, error)
 	OnTraceExport      func(runID string) (string, error)
+	OnScrubState       func(runID string, seq int64) (*engine.RunState, error)
 }
 
 type tickMsg time.Time
@@ -54,6 +55,9 @@ type Model struct {
 	confirmCancel     bool
 	filterMode        bool
 	taskFilter        string
+	scrubMode         bool
+	scrubCursor       int
+	scrubState        *engine.RunState
 	width             int
 	height            int
 	quitting          bool
@@ -115,6 +119,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.forkModalOpen && len(m.snap.State.Checkpoints) > 0 && m.forkSelectedIdx >= len(m.snap.State.Checkpoints) {
 				m.forkSelectedIdx = len(m.snap.State.Checkpoints) - 1
 			}
+			if m.scrubMode {
+				m.scrubCursor = StepScrubber(m.events, m.scrubCursor, 0)
+			}
 		}
 		return m, nil
 
@@ -127,6 +134,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.filterMode {
 			return m.updateFilterMode(msg)
+		}
+		if m.scrubMode {
+			return m.updateScrubMode(msg)
 		}
 
 		switch msg.String() {
@@ -251,6 +261,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.diffView = out
+			return m, nil
+
+		case "s":
+			if len(m.events) == 0 {
+				m.statusLine = "No events to scrub yet."
+				return m, nil
+			}
+			m.scrubMode = true
+			m.scrubCursor = len(m.events) - 1
+			m.refreshScrubState()
 			return m, nil
 		}
 	}
@@ -419,6 +439,49 @@ func (m Model) updateFilterMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateScrubMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "s", "esc":
+		m.scrubMode = false
+		m.scrubState = nil
+		m.statusLine = "Exited scrub mode."
+		return m, nil
+	case "left", "[":
+		m.scrubCursor = StepScrubber(m.events, m.scrubCursor, -1)
+		m.refreshScrubState()
+		return m, nil
+	case "right", "]":
+		m.scrubCursor = StepScrubber(m.events, m.scrubCursor, 1)
+		m.refreshScrubState()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) refreshScrubState() {
+	if len(m.events) == 0 {
+		m.scrubState = nil
+		m.statusLine = "No events to scrub yet."
+		return
+	}
+	m.scrubCursor = StepScrubber(m.events, m.scrubCursor, 0)
+	ev := m.events[m.scrubCursor]
+	m.statusLine = RenderScrubBanner(ev, m.scrubCursor, len(m.events))
+	if m.cfg.OnScrubState != nil {
+		st, err := m.cfg.OnScrubState(m.activeRun, ev.Seq)
+		if err != nil {
+			m.statusLine = fmt.Sprintf("Scrub error (seq %d): %v", ev.Seq, err)
+			return
+		}
+		m.scrubState = st
+	} else {
+		m.scrubState = nil
+	}
+}
+
 func (m *Model) addBranch(runID string) {
 	if runID == "" {
 		return
@@ -483,7 +546,11 @@ func (m Model) View() string {
 		b.WriteString(borderStyle.Render("TIMELINE DIFF (press [d] to close)\n" + m.diffView))
 		b.WriteString("\n")
 	} else {
-		left := renderDAGPane(m.snap.State, m.taskFilter)
+		dagState := m.snap.State
+		if m.scrubMode && m.scrubState != nil {
+			dagState = m.scrubState
+		}
+		left := renderDAGPane(dagState, m.taskFilter)
 		right := renderJournalPane(m.events)
 		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top,
 			borderStyle.Width(44).Render(left),
@@ -497,9 +564,9 @@ func (m Model) View() string {
 	}
 	b.WriteString(mutedStyle.Render("Status: "+m.statusLine) + "\n")
 	if m.cfg.AllowKill {
-		b.WriteString(mutedStyle.Render("[k] Kill worker (SIGKILL)  [f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [p] Pause/Resume  [x] Cancel  [t] Trace  [/] Filter  [q] Quit") + "\n")
+		b.WriteString(mutedStyle.Render("[k] Kill worker (SIGKILL)  [f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [p] Pause/Resume  [x] Cancel  [t] Trace  [s] Scrub  [/] Filter  [q] Quit") + "\n")
 	} else {
-		b.WriteString(mutedStyle.Render("[f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [p] Pause/Resume  [x] Cancel  [t] Trace  [/] Filter  [q] Quit  (read-only: [k] disabled)") + "\n")
+		b.WriteString(mutedStyle.Render("[f] Fork checkpoint  [b] Switch branch  [r] Replay check  [d] Diff fork  [p] Pause/Resume  [x] Cancel  [t] Trace  [s] Scrub  [/] Filter  [q] Quit  (read-only: [k] disabled)") + "\n")
 	}
 	return b.String()
 }
