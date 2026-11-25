@@ -284,6 +284,44 @@ func Apply(state *RunState, ev Event) error {
 		}
 		state.Status = RunStatusFailed
 
+	case EventRunPaused:
+		if len(ev.Payload) > 0 {
+			var p RunLifecyclePayload
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				return fmt.Errorf("unmarshal RUN_PAUSED: %w", err)
+			}
+		}
+		state.Status = RunStatusPaused
+
+	case EventRunResumed:
+		if len(ev.Payload) > 0 {
+			var p RunLifecyclePayload
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				return fmt.Errorf("unmarshal RUN_RESUMED: %w", err)
+			}
+		}
+		state.Status = RunStatusRunning
+
+	case EventRunCancelled:
+		var p RunLifecyclePayload
+		if len(ev.Payload) > 0 {
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				return fmt.Errorf("unmarshal RUN_CANCELLED: %w", err)
+			}
+			state.FailureReason = p.Reason
+		}
+		state.Status = RunStatusCancelled
+		for _, id := range state.TopoOrder {
+			ts := state.Tasks[id]
+			if ts.Status == TaskStatusLeased || ts.Status == TaskStatusRunning {
+				ts.Status = TaskStatusPending
+				ts.WorkerID = ""
+				ts.LeaseExpiresAtNs = 0
+				ts.RetryAfterNs = 0
+				ts.StartedAtNs = 0
+			}
+		}
+
 	default:
 		return fmt.Errorf("unknown event type %q", ev.Type)
 	}
@@ -357,7 +395,7 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 		return []Event{ev}, []Effect{eff}, nil
 
 	case CmdMarkTaskStarted:
-		if state.Status != RunStatusRunning {
+		if state.Status != RunStatusRunning && state.Status != RunStatusPaused {
 			return nil, nil, ErrRunTerminal
 		}
 		ts, ok := state.Tasks[c.TaskID]
@@ -398,7 +436,7 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 		return []Event{ev}, nil, nil
 
 	case CmdCompleteTask:
-		if state.Status != RunStatusRunning {
+		if state.Status != RunStatusRunning && state.Status != RunStatusPaused {
 			return nil, nil, ErrRunTerminal
 		}
 		ts, ok := state.Tasks[c.TaskID]
@@ -477,7 +515,7 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 		return events, effects, nil
 
 	case CmdFailTask:
-		if state.Status != RunStatusRunning {
+		if state.Status != RunStatusRunning && state.Status != RunStatusPaused {
 			return nil, nil, ErrRunTerminal
 		}
 		ts, ok := state.Tasks[c.TaskID]
@@ -546,7 +584,7 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 		return events, effects, nil
 
 	case CmdExpireLeases:
-		if state.Status != RunStatusRunning {
+		if state.Status != RunStatusRunning && state.Status != RunStatusPaused {
 			return nil, nil, nil
 		}
 		var events []Event
@@ -722,9 +760,66 @@ func Step(dag *DAG, state *RunState, cmd Command, now time.Time) ([]Event, []Eff
 		}
 		return events, effects, nil
 
+	case CmdPauseRun:
+		if isTerminalRunStatus(state.Status) {
+			return nil, nil, fmt.Errorf("%w: cannot pause run %q in status %s", ErrRunTerminal, state.RunID, state.Status)
+		}
+		if state.Status != RunStatusRunning {
+			return nil, nil, fmt.Errorf("%w: cannot pause run %q in status %s", ErrInvalidTransition, state.RunID, state.Status)
+		}
+		ev := Event{
+			RunID:       state.RunID,
+			Seq:         nextSeq,
+			TimestampNs: nowNs,
+			Type:        EventRunPaused,
+			Payload:     mustMarshal(RunLifecyclePayload{Reason: c.Reason}),
+		}
+		return []Event{ev}, nil, nil
+
+	case CmdResumeRun:
+		if isTerminalRunStatus(state.Status) {
+			return nil, nil, fmt.Errorf("%w: cannot resume run %q in status %s", ErrRunTerminal, state.RunID, state.Status)
+		}
+		if state.Status != RunStatusPaused {
+			return nil, nil, fmt.Errorf("%w: cannot resume run %q in status %s", ErrInvalidTransition, state.RunID, state.Status)
+		}
+		ev := Event{
+			RunID:       state.RunID,
+			Seq:         nextSeq,
+			TimestampNs: nowNs,
+			Type:        EventRunResumed,
+			Payload:     mustMarshal(RunLifecyclePayload{Reason: c.Reason}),
+		}
+		return []Event{ev}, nil, nil
+
+	case CmdCancelRun:
+		if isTerminalRunStatus(state.Status) {
+			return nil, nil, fmt.Errorf("%w: cannot cancel run %q in status %s", ErrRunTerminal, state.RunID, state.Status)
+		}
+		if state.Status != RunStatusRunning && state.Status != RunStatusPaused && state.Status != RunStatusPending {
+			return nil, nil, fmt.Errorf("%w: cannot cancel run %q in status %s", ErrInvalidTransition, state.RunID, state.Status)
+		}
+		ev := Event{
+			RunID:       state.RunID,
+			Seq:         nextSeq,
+			TimestampNs: nowNs,
+			Type:        EventRunCancelled,
+			Payload:     mustMarshal(RunLifecyclePayload{Reason: c.Reason}),
+		}
+		eff := Effect{
+			Kind:   EffectRunTerminal,
+			RunID:  state.RunID,
+			Status: RunStatusCancelled,
+		}
+		return []Event{ev}, []Effect{eff}, nil
+
 	default:
 		return nil, nil, fmt.Errorf("unsupported command type %T", cmd)
 	}
+}
+
+func isTerminalRunStatus(status RunStatus) bool {
+	return status == RunStatusCompleted || status == RunStatusFailed || status == RunStatusCancelled
 }
 
 // ResolveCheckpoint finds a checkpoint by 1-based numeric ID or optional YAML checkpoint_name.

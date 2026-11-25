@@ -68,9 +68,9 @@ func NewCoordinator(st store.JournalStore, cfg CoordinatorConfig) *Coordinator {
 // grants a bounded startup grace window (cfg.LeaseTTL) to inherited active leases
 // so surviving workers can reconnect and renew without false-positive expiry.
 func (c *Coordinator) Recover(ctx context.Context) error {
-	records, err := c.store.ListRuns(ctx, engine.RunStatusRunning)
+	records, err := c.store.ListRuns(ctx, engine.RunStatusRunning, engine.RunStatusPaused)
 	if err != nil {
-		return fmt.Errorf("list running runs for recovery: %w", err)
+		return fmt.Errorf("list running/paused runs for recovery: %w", err)
 	}
 	now := c.nowFn()
 	graceExpiry := now.Add(c.cfg.LeaseTTL).UnixNano()
@@ -132,7 +132,7 @@ func (c *Coordinator) ReapExpiredLeases(ctx context.Context) error {
 
 	var firstErr error
 	for _, ar := range c.runs {
-		if ar.state.Status != engine.RunStatusRunning {
+		if ar.state.Status != engine.RunStatusRunning && ar.state.Status != engine.RunStatusPaused {
 			continue
 		}
 		prevSeq := ar.state.LastSeq
@@ -427,6 +427,12 @@ func (c *Coordinator) commitEventsLocked(ctx context.Context, ar *activeRun, pre
 			nextStatus = engine.RunStatusCompleted
 		case engine.EventRunFailed:
 			nextStatus = engine.RunStatusFailed
+		case engine.EventRunPaused:
+			nextStatus = engine.RunStatusPaused
+		case engine.EventRunResumed:
+			nextStatus = engine.RunStatusRunning
+		case engine.EventRunCancelled:
+			nextStatus = engine.RunStatusCancelled
 		}
 	}
 	if err := c.store.Append(ctx, ar.state.RunID, prevSeq, evs, nextStatus); err != nil {
@@ -500,6 +506,9 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/runs/{id}/events", c.handleRunEventsSSE)
 	mux.HandleFunc("POST /v1/runs/{id}/fork", c.handleForkRun)
 	mux.HandleFunc("POST /v1/runs/{id}/merge", c.handleMergeRun)
+	mux.HandleFunc("POST /v1/runs/{id}/pause", c.handlePauseRun)
+	mux.HandleFunc("POST /v1/runs/{id}/resume", c.handleResumeRun)
+	mux.HandleFunc("POST /v1/runs/{id}/cancel", c.handleCancelRun)
 	mux.HandleFunc("POST /v1/workers/register", c.handleWorkerRegister)
 	mux.HandleFunc("POST /v1/workers/poll", c.handleWorkerPoll)
 	mux.HandleFunc("POST /v1/workers/heartbeat", c.handleWorkerHeartbeat)
@@ -521,6 +530,61 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (c *Coordinator) handlePauseRun(w http.ResponseWriter, r *http.Request) {
+	c.handleRunLifecycle(w, r, "pause")
+}
+
+func (c *Coordinator) handleResumeRun(w http.ResponseWriter, r *http.Request) {
+	c.handleRunLifecycle(w, r, "resume")
+}
+
+func (c *Coordinator) handleCancelRun(w http.ResponseWriter, r *http.Request) {
+	c.handleRunLifecycle(w, r, "cancel")
+}
+
+func (c *Coordinator) handleRunLifecycle(w http.ResponseWriter, r *http.Request, action string) {
+	runID := r.PathValue("id")
+	var req RunLifecycleRequest
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	var cmd engine.Command
+	switch action {
+	case "pause":
+		cmd = engine.CmdPauseRun{Reason: req.Reason}
+	case "resume":
+		cmd = engine.CmdResumeRun{Reason: req.Reason}
+	case "cancel":
+		cmd = engine.CmdCancelRun{Reason: req.Reason}
+	default:
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "unknown lifecycle action"})
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	ar, err := c.loadRunLocked(r.Context(), runID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, store.ErrRunNotFound) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, ErrorResponse{Error: err.Error()})
+		return
+	}
+	prevSeq := ar.state.LastSeq
+	evs, _, stepErr := engine.Step(ar.dag, ar.state, cmd, c.nowFn())
+	if stepErr != nil {
+		writeJSON(w, http.StatusConflict, ErrorResponse{Error: stepErr.Error()})
+		return
+	}
+	if err := c.commitEventsLocked(r.Context(), ar, prevSeq, evs); err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, RunLifecycleResponse{RunID: runID, Status: ar.state.Status})
 }
 
 func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {

@@ -167,4 +167,45 @@ tasks:
 	if !strings.Contains(mergeOut, "step2") {
 		t.Fatalf("expected step2 in merge plan:\n%s", mergeOut)
 	}
+
+	// 6. Export flight-recorder bundle, import into a fresh DB, replay, and export Perfetto trace.
+	bundlePath := filepath.Join(dir, "run_cli_2.bundle.json")
+	exportOut := runCLI("export", "run_cli_2", "-o", bundlePath, "--db", dbPath)
+	if !strings.Contains(exportOut, "Exported flight-recorder bundle") {
+		t.Fatalf("unexpected export output: %s", exportOut)
+	}
+
+	db2Path := filepath.Join(dir, "imported.db")
+	importOut := runCLI("import", bundlePath, "--run-id", "run_imported", "--db", db2Path)
+	if !strings.Contains(importOut, "Imported verified bundle as run_imported") {
+		t.Fatalf("unexpected import output: %s", importOut)
+	}
+	replayImported := runCLI("replay", "run_imported", "--db", db2Path)
+	if !strings.Contains(replayImported, "Replay OK") || !strings.Contains(replayImported, "tasks=2/2") {
+		t.Fatalf("unexpected imported replay output:\n%s", replayImported)
+	}
+
+	tracePath := filepath.Join(dir, "trace.json")
+	traceOut := runCLI("trace", "run_cli_2", "-o", tracePath, "--db", dbPath)
+	if !strings.Contains(traceOut, "Chrome Trace / Perfetto") {
+		t.Fatalf("unexpected trace output: %s", traceOut)
+	}
+	traceBytes, err := os.ReadFile(tracePath)
+	if err != nil || !strings.Contains(string(traceBytes), `"traceEvents"`) {
+		t.Fatalf("expected valid traceEvents JSON, err=%v", err)
+	}
+
+	// 7. Recurring schedule CLI: add -> list -> delete.
+	schedAdd := runCLI("schedule", "add", "nightly", "--cron", "0 2 * * *", "--workflow", wfPath, "--db", dbPath)
+	if !strings.Contains(schedAdd, `Scheduled "nightly"`) {
+		t.Fatalf("unexpected schedule add output: %s", schedAdd)
+	}
+	schedList := runCLI("schedule", "list", "--db", dbPath)
+	if !strings.Contains(schedList, "nightly") {
+		t.Fatalf("expected nightly in schedule list:\n%s", schedList)
+	}
+	schedDel := runCLI("schedule", "delete", "nightly", "--db", dbPath)
+	if !strings.Contains(schedDel, `Deleted schedule "nightly"`) {
+		t.Fatalf("unexpected schedule delete output: %s", schedDel)
+	}
 }

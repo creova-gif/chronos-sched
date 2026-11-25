@@ -24,8 +24,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/creova-gif/chronos-sched/internal/engine"
+	"github.com/creova-gif/chronos-sched/internal/export"
 	"github.com/creova-gif/chronos-sched/internal/ha"
 	"github.com/creova-gif/chronos-sched/internal/runtime"
+	"github.com/creova-gif/chronos-sched/internal/schedule"
 	"github.com/creova-gif/chronos-sched/internal/store"
 	"github.com/creova-gif/chronos-sched/internal/store/sqlite"
 	"github.com/creova-gif/chronos-sched/internal/tui"
@@ -76,6 +78,12 @@ func run(args []string) error {
 			return cmdWorkflowRun(args[2:])
 		case "inspect":
 			return cmdWorkflowInspect(args[2:])
+		case "pause":
+			return cmdWorkflowLifecycle("pause", args[2:])
+		case "resume":
+			return cmdWorkflowLifecycle("resume", args[2:])
+		case "cancel":
+			return cmdWorkflowLifecycle("cancel", args[2:])
 		default:
 			return fmt.Errorf("unknown workflow subcommand %q", args[1])
 		}
@@ -91,6 +99,14 @@ func run(args []string) error {
 		return cmdBranches(args[1:])
 	case "merge":
 		return cmdMerge(args[1:])
+	case "export":
+		return cmdExport(args[1:])
+	case "import":
+		return cmdImport(args[1:])
+	case "trace":
+		return cmdTrace(args[1:])
+	case "schedule":
+		return cmdSchedule(args[1:])
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
@@ -109,12 +125,17 @@ Usage:
   chronos worker start [--coordinator http://127.0.0.1:7420] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
+  chronos workflow <pause|resume|cancel> <run_id> [--reason text] [--coordinator http://127.0.0.1:7420]
   chronos history <run_id> [--db .chronos/chronos.db]
   chronos replay <run_id> [--dry-run] [--db .chronos/chronos.db]
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
   chronos branches [--db .chronos/chronos.db]
   chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--apply] [--new-run-id id] [--coordinator http://127.0.0.1:7420] [--db .chronos/chronos.db]
+  chronos export <run_id> [-o bundle.json] [--db .chronos/chronos.db]
+  chronos import <bundle.json> [--run-id id] [--db .chronos/chronos.db]
+  chronos trace <run_id> [-o trace.json] [--db .chronos/chronos.db]
+  chronos schedule <add|list|delete> ... [--db .chronos/chronos.db]
 `)
 }
 
@@ -357,6 +378,18 @@ func cmdServerStart(args []string) error {
 			return fmt.Errorf("recover coordinator state: %w", err)
 		}
 		go coord.StartReaper(runCtx)
+
+		if schedStore, err := schedule.OpenSQLiteStore(*dbPath); err == nil {
+			defer func() { _ = schedStore.Close() }()
+			runner := schedule.NewRunner(schedStore, func(sCtx context.Context, runID, wfYAML string) error {
+				_, err := coord.SubmitWorkflow(sCtx, runtime.SubmitWorkflowRequest{
+					RunID:        runID,
+					WorkflowYAML: wfYAML,
+				})
+				return err
+			}, time.Now)
+			go runner.Run(runCtx, time.Second)
+		}
 
 		srv := &http.Server{Addr: *addr, Handler: coord.Handler(), ReadHeaderTimeout: 5 * time.Second}
 		go func() {
@@ -824,6 +857,229 @@ func cmdDiff(args []string) error {
 	}
 	fmt.Print(out)
 	return nil
+}
+
+func cmdWorkflowLifecycle(action string, args []string) error {
+	fs := flag.NewFlagSet("workflow "+action, flag.ContinueOnError)
+	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+	reason := fs.String("reason", "", "optional reason for lifecycle transition")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: chronos workflow %s <run_id> [--reason text]", action)
+	}
+	runID := fs.Arg(0)
+	var resp runtime.RunLifecycleResponse
+	if err := rpcPost(*coordURL+"/v1/runs/"+runID+"/"+action, runtime.RunLifecycleRequest{Reason: *reason}, &resp); err != nil {
+		return err
+	}
+	fmt.Printf("Run %s -> %s\n", resp.RunID, resp.Status)
+	return nil
+}
+
+func cmdExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	outPath := fs.String("o", "", "output bundle file path (default stdout)")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: chronos export <run_id> [-o bundle.json] [--db %s]", defaultDBPath)
+	}
+	st, err := sqlite.OpenReadOnly(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	bundle, err := export.ExportBundle(context.Background(), st, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(bundle, "", "  ")
+	if err != nil {
+		return err
+	}
+	if *outPath != "" {
+		if err := os.WriteFile(*outPath, raw, 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("Exported flight-recorder bundle for %s (%d events, sha256=%s) -> %s\n",
+			bundle.Run.RunID, len(bundle.Events), bundle.ChecksumSHA256[:12], *outPath)
+		return nil
+	}
+	fmt.Println(string(raw))
+	return nil
+}
+
+func cmdImport(args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	overrideRunID := fs.String("run-id", "", "optional run ID override on import")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: chronos import <bundle.json> [--run-id id] [--db %s]", defaultDBPath)
+	}
+	raw, err := os.ReadFile(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	var bundle export.FlightBundle
+	if err := json.Unmarshal(raw, &bundle); err != nil {
+		return fmt.Errorf("parse bundle JSON: %w", err)
+	}
+	st, err := sqlite.Open(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	runID, err := export.ImportBundle(context.Background(), st, &bundle, *overrideRunID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Imported verified bundle as %s (%d events) into %s\n", runID, len(bundle.Events), *dbPath)
+	return nil
+}
+
+func cmdTrace(args []string) error {
+	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	outPath := fs.String("o", "", "output Chrome Trace / Perfetto JSON path (default stdout)")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 {
+		return fmt.Errorf("usage: chronos trace <run_id> [-o trace.json] [--db %s]", defaultDBPath)
+	}
+	st, err := sqlite.OpenReadOnly(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	evs, err := st.LoadRunEvents(context.Background(), fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	raw, err := export.ToChromeTrace(evs)
+	if err != nil {
+		return err
+	}
+	if *outPath != "" {
+		if err := os.WriteFile(*outPath, raw, 0o644); err != nil {
+			return err
+		}
+		fmt.Printf("Wrote Chrome Trace / Perfetto timeline for %s -> %s\n", fs.Arg(0), *outPath)
+		return nil
+	}
+	fmt.Println(string(raw))
+	return nil
+}
+
+func cmdSchedule(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: chronos schedule <add|list|delete> ...")
+	}
+	switch args[0] {
+	case "add":
+		fs := flag.NewFlagSet("schedule add", flag.ContinueOnError)
+		dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+		cronExpr := fs.String("cron", "", "5-field cron expression or @every/@hourly/@daily")
+		wfPath := fs.String("workflow", "", "YAML workflow file path")
+		misfire := fs.String("misfire", string(schedule.MisfireSkip), "misfire policy: SKIP or CATCH_UP")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 || *cronExpr == "" || *wfPath == "" {
+			return fmt.Errorf("usage: chronos schedule add <id> --cron '<expr>' --workflow <file.yaml> [--misfire SKIP|CATCH_UP]")
+		}
+		spec, err := schedule.ParseSpec(*cronExpr)
+		if err != nil {
+			return err
+		}
+		rawYAML, err := os.ReadFile(*wfPath)
+		if err != nil {
+			return err
+		}
+		if _, err := engine.ParseDAG(rawYAML); err != nil {
+			return err
+		}
+		st, err := schedule.OpenSQLiteStore(*dbPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
+
+		now := time.Now().UTC()
+		nextRun := spec.Next(now)
+		rec := schedule.ScheduleRecord{
+			ID:            fs.Arg(0),
+			CronExpr:      *cronExpr,
+			WorkflowYAML:  string(rawYAML),
+			MisfirePolicy: schedule.MisfirePolicy(strings.ToLower(*misfire)),
+			NextRunAtNs:   nextRun.UnixNano(),
+			Enabled:       true,
+			CreatedAtNs:   now.UnixNano(),
+		}
+		if err := st.Upsert(context.Background(), rec); err != nil {
+			return err
+		}
+		fmt.Printf("Scheduled %q (%s) next_run=%s\n", rec.ID, rec.CronExpr, nextRun.Format(time.RFC3339))
+		return nil
+
+	case "list":
+		fs := flag.NewFlagSet("schedule list", flag.ContinueOnError)
+		dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		st, err := schedule.OpenSQLiteStore(*dbPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
+		recs, err := st.List(context.Background())
+		if err != nil {
+			return err
+		}
+		if len(recs) == 0 {
+			fmt.Println("No schedules configured.")
+			return nil
+		}
+		for _, r := range recs {
+			fmt.Printf("%-18s  %-16s  misfire=%-8s  enabled=%v  next=%s\n",
+				r.ID, r.CronExpr, r.MisfirePolicy, r.Enabled, time.Unix(0, r.NextRunAtNs).UTC().Format(time.RFC3339))
+		}
+		return nil
+
+	case "delete":
+		fs := flag.NewFlagSet("schedule delete", flag.ContinueOnError)
+		dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return fmt.Errorf("usage: chronos schedule delete <id>")
+		}
+		st, err := schedule.OpenSQLiteStore(*dbPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
+		if err := st.Delete(context.Background(), fs.Arg(0)); err != nil {
+			return err
+		}
+		fmt.Printf("Deleted schedule %q\n", fs.Arg(0))
+		return nil
+
+	default:
+		return fmt.Errorf("unknown schedule subcommand %q", args[0])
+	}
 }
 
 func diffRunsFromStore(ctx context.Context, st *sqlite.Store, runA, runB string) (string, error) {
