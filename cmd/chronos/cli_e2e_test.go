@@ -214,4 +214,14 @@ tasks:
 	if !strings.Contains(gcOut, "GC dry_run=true") || !strings.Contains(gcOut, "deleted_runs=0") {
 		t.Fatalf("unexpected gc dry-run output: %s", gcOut)
 	}
+
+	// 9. chronos version & chronos doctor.
+	verOut := runCLI("version")
+	if !strings.Contains(verOut, "chronos") {
+		t.Fatalf("unexpected version output: %s", verOut)
+	}
+	docOut := runCLI("doctor", "--db", dbPath, "--coordinator", "")
+	if !strings.Contains(docOut, "[PASS] sqlite_integrity") {
+		t.Fatalf("unexpected doctor output:\n%s", docOut)
+	}
 }

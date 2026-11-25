@@ -8,6 +8,8 @@ builds:
     binary: chronos
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
     goos:
       - darwin
       - linux
