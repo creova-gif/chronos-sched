@@ -3,11 +3,14 @@
 **Deterministic distributed workflow scheduler and interactive execution flight recorder in a single Go binary.**
 
 [![CI Status](https://github.com/creova-gif/chronos-sched/actions/workflows/ci.yml/badge.svg)](https://github.com/creova-gif/chronos-sched/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/badge/Release-v0.2.0-8A2BE2)](CHANGELOG.md)
 [![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![OpenAPI 3.1](https://img.shields.io/badge/OpenAPI-3.1-6BA539)](docs/api/openapi.yaml)
 
 ChronosSched combines multi-worker DAG execution with an append-only event journal, live crash recovery, side-effect-free deterministic replay, and Git-style timeline branching (`fork`, `diff`, `merge`) — with zero mandatory external infrastructure (no Postgres, Redis, or Kafka).
+
+![ChronosSched Console Preview](docs/assets/chronos-console-preview.svg)
 
 ---
 
