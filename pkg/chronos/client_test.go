@@ -485,19 +485,64 @@ func TestClientListWorkers(t *testing.T) {
 
 func TestClientWithTenantHeader(t *testing.T) {
 	ctx := context.Background()
-	var gotTenant string
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotTenant = r.Header.Get("X-Chronos-Tenant")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	t.Run("doJSON", func(t *testing.T) {
+		var gotTenant string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotTenant = r.Header.Get("X-Chronos-Tenant")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
 
-	client := chronos.NewClient(srv.URL).WithTenant("acme-prod")
-	if err := client.Health(ctx); err != nil {
-		t.Fatalf("Health() error = %v", err)
-	}
-	if gotTenant != "acme-prod" {
-		t.Fatalf("expected X-Chronos-Tenant header %q, got %q", "acme-prod", gotTenant)
-	}
+		client := chronos.NewClient(srv.URL).WithTenant("acme-prod")
+		if err := client.Health(ctx); err != nil {
+			t.Fatalf("Health() error = %v", err)
+		}
+		if gotTenant != "acme-prod" {
+			t.Fatalf("expected X-Chronos-Tenant header %q, got %q", "acme-prod", gotTenant)
+		}
+	})
+
+	t.Run("GetArtifact", func(t *testing.T) {
+		var gotTenant string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotTenant = r.Header.Get("X-Chronos-Tenant")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("artifact-bytes"))
+		}))
+		defer srv.Close()
+
+		client := chronos.NewClient(srv.URL).WithTenant("acme-prod")
+		data, err := client.GetArtifact(ctx, "run-1", "task-1", "output.log")
+		if err != nil {
+			t.Fatalf("GetArtifact() error = %v", err)
+		}
+		if string(data) != "artifact-bytes" {
+			t.Fatalf("unexpected artifact body %q", string(data))
+		}
+		if gotTenant != "acme-prod" {
+			t.Fatalf("expected X-Chronos-Tenant header %q, got %q", "acme-prod", gotTenant)
+		}
+	})
+
+	t.Run("StreamRunEvents", func(t *testing.T) {
+		var gotTenant string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotTenant = r.Header.Get("X-Chronos-Tenant")
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		client := chronos.NewClient(srv.URL).WithTenant("acme-prod")
+		err := client.StreamRunEvents(ctx, "run-1", func(chronos.StreamEvent) error {
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("StreamRunEvents() error = %v", err)
+		}
+		if gotTenant != "acme-prod" {
+			t.Fatalf("expected X-Chronos-Tenant header %q, got %q", "acme-prod", gotTenant)
+		}
+	})
 }
