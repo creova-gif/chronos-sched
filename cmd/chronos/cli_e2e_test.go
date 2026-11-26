@@ -146,6 +146,10 @@ tasks:
 	if !strings.Contains(drainOut, "Worker w-cli-1 draining=true") {
 		t.Fatalf("unexpected worker drain output:\n%s", drainOut)
 	}
+	listOut := runCLI("worker", "list", "--coordinator", coordURL)
+	if !strings.Contains(listOut, "w-cli-1") || !strings.Contains(listOut, "draining=true") {
+		t.Fatalf("unexpected worker list output:\n%s", listOut)
+	}
 
 	// 5. Stop server & worker, then run offline SQLite CLI commands: history, replay, diff, branches.
 	_ = workerCmd.Process.Kill()

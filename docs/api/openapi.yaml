@@ -336,6 +336,30 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /v1/workers:
+    get:
+      summary: List registered workers
+      operationId: listWorkers
+      responses:
+        "200":
+          description: List of registered workers and their liveness state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListWorkersResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /v1/workers/register:
     post:
       summary: Register a worker and renew inherited leases
@@ -789,6 +813,8 @@ components:
           format: int64
         alive:
           type: boolean
+        draining:
+          type: boolean
 
     CheckpointInfo:
       type: object
@@ -1225,3 +1251,12 @@ components:
           type: boolean
         in_flight_tasks:
           type: integer
+
+    ListWorkersResponse:
+      type: object
+      required: [workers]
+      properties:
+        workers:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkerInfo"
