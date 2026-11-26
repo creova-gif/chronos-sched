@@ -241,6 +241,8 @@ func main() {
 - [ADR-015: Idempotency Keys, Security Headers, and Worker Connection Pooling](docs/adr/015-idempotency-and-enterprise-hardening.md)
 - [OpenAPI 3.1 Specification](docs/api/openapi.yaml)
 - [Threat Model](docs/THREAT_MODEL.md)
+- [Security Policy](SECURITY.md)
+- [Environment Configuration Example](.env.example)
 - [CHANGELOG](CHANGELOG.md)
 - [Contributing Guide](CONTRIBUTING.md)
 - [Engineering Standards](AGENTS.md)

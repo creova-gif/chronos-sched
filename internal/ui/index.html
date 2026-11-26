@@ -101,6 +101,16 @@
       font-family: var(--mono);
       min-width: 220px;
     }
+    select {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.35rem 0.6rem;
+      font-size: 0.85rem;
+      font-family: var(--mono);
+      cursor: pointer;
+    }
     button {
       background: var(--surface-alt);
       color: var(--text);
@@ -195,6 +205,11 @@
       margin: 0;
       font-size: 1rem;
       font-weight: 600;
+    }
+    .section-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
     .table-wrap {
       overflow-x: auto;
@@ -316,7 +331,17 @@
     <section class="card">
       <div class="section-header">
         <h2>Workflow Runs</h2>
-        <span id="runs-count" class="badge">0</span>
+        <div class="section-actions">
+          <select id="run-status-filter" aria-label="Filter runs by status">
+            <option value="">All</option>
+            <option value="RUNNING">RUNNING</option>
+            <option value="PAUSED">PAUSED</option>
+            <option value="COMPLETED">COMPLETED</option>
+            <option value="FAILED">FAILED</option>
+            <option value="CANCELLED">CANCELLED</option>
+          </select>
+          <span id="runs-count" class="badge">0</span>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -438,6 +463,8 @@
       const autoRefreshCheckbox = document.getElementById("auto-refresh");
       const refreshBtn = document.getElementById("refresh-btn");
       const statusBanner = document.getElementById("status-banner");
+      const mainContent = document.getElementById("main-content");
+      const runStatusFilter = document.getElementById("run-status-filter");
       const runsDatalist = document.getElementById("runs-datalist");
       const artifactsRunInput = document.getElementById("artifacts-run-id");
       const loadArtifactsBtn = document.getElementById("load-artifacts-btn");
@@ -549,11 +576,23 @@
       async function loadRuns() {
         const tbody = document.getElementById("runs-body");
         const count = document.getElementById("runs-count");
-        const data = await apiFetch("/v1/runs");
+        const statusFilter = runStatusFilter ? runStatusFilter.value : "";
+        let runsUrl = "/v1/runs?limit=100";
+        if (statusFilter) {
+          runsUrl += "&status=" + encodeURIComponent(statusFilter);
+        }
+        const data = await apiFetch(runsUrl);
         const runs = Array.isArray(data) ? data : (data && Array.isArray(data.runs) ? data.runs : []);
         count.textContent = String(runs.length);
         if (runs.length === 0) {
-          emptyRow(tbody, 5, "No workflow runs recorded.");
+          runsDatalist.textContent = "";
+          emptyRow(
+            tbody,
+            5,
+            statusFilter
+              ? "No workflow runs with status " + statusFilter + "."
+              : "No workflow runs recorded."
+          );
           return;
         }
         tbody.textContent = "";
@@ -569,7 +608,7 @@
           tr.appendChild(cell(run.workflow_name));
           const stTd = document.createElement("td");
           const st = String(run.status || "unknown");
-          const kind = st === "SUCCEEDED" || st === "COMPLETED" ? "ok" : (st === "FAILED" || st === "CANCELED" ? "err" : "warn");
+          const kind = st === "SUCCEEDED" || st === "COMPLETED" ? "ok" : (st === "FAILED" || st === "CANCELED" || st === "CANCELLED" ? "err" : "warn");
           stTd.appendChild(statusBadge(st, kind));
           tr.appendChild(stTd);
           tr.appendChild(cell(run.parent_run_id, "mono"));
@@ -771,19 +810,28 @@
       }
 
       async function refreshAll() {
-        const errors = [];
-        for (const fn of [loadReadyz, loadRuns, loadWorkers, loadDLQ]) {
-          try {
-            await fn();
-          } catch (err) {
-            errors.push(err.message);
+        if (mainContent) {
+          mainContent.setAttribute("aria-busy", "true");
+        }
+        try {
+          const errors = [];
+          for (const fn of [loadReadyz, loadRuns, loadWorkers, loadDLQ]) {
+            try {
+              await fn();
+            } catch (err) {
+              errors.push(err.message);
+            }
+          }
+          if (errors.length > 0) {
+            announce("API error: " + errors[0], true);
+            return false;
+          }
+          return true;
+        } finally {
+          if (mainContent) {
+            mainContent.removeAttribute("aria-busy");
           }
         }
-        if (errors.length > 0) {
-          announce("API error: " + errors[0], true);
-          return false;
-        }
-        return true;
       }
 
       saveTokenBtn.addEventListener("click", function () {
@@ -806,6 +854,11 @@
       loadArtifactsBtn.addEventListener("click", loadArtifacts);
       approveBtn.addEventListener("click", function () { resolveApproval(true); });
       rejectBtn.addEventListener("click", function () { resolveApproval(false); });
+      if (runStatusFilter) {
+        runStatusFilter.addEventListener("change", function () {
+          refreshAll();
+        });
+      }
 
       const AUTO_REFRESH_MS = 3000;
       let autoRefreshTimer = null;
