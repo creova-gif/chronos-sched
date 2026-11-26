@@ -459,14 +459,16 @@ func (c *Coordinator) commitEventsLocked(ctx context.Context, ar *activeRun, pre
 			if dlq, ok := c.store.(store.DLQStore); ok {
 				var p engine.TaskFailedPayload
 				if err := json.Unmarshal(ev.Payload, &p); err == nil && !p.WillRetry {
-					_ = dlq.RecordDeadLetter(ctx, store.DeadLetterEntry{
+					if err := dlq.RecordDeadLetter(ctx, store.DeadLetterEntry{
 						RunID:        ar.state.RunID,
 						TaskID:       ev.TaskID,
 						WorkflowName: ar.state.WorkflowName,
 						Attempt:      ev.Attempt,
 						Reason:       p.Error,
 						FailedAtNs:   ev.TimestampNs,
-					})
+					}); err == nil {
+						c.metrics.IncDeadLettersRecorded()
+					}
 				}
 			}
 		case engine.EventLeaseExpired:
@@ -474,14 +476,16 @@ func (c *Coordinator) commitEventsLocked(ctx context.Context, ar *activeRun, pre
 			if dlq, ok := c.store.(store.DLQStore); ok {
 				var p engine.LeaseExpiredPayload
 				if err := json.Unmarshal(ev.Payload, &p); err == nil && !p.WillRetry {
-					_ = dlq.RecordDeadLetter(ctx, store.DeadLetterEntry{
+					if err := dlq.RecordDeadLetter(ctx, store.DeadLetterEntry{
 						RunID:        ar.state.RunID,
 						TaskID:       ev.TaskID,
 						WorkflowName: ar.state.WorkflowName,
 						Attempt:      ev.Attempt,
 						Reason:       p.Reason,
 						FailedAtNs:   ev.TimestampNs,
-					})
+					}); err == nil {
+						c.metrics.IncDeadLettersRecorded()
+					}
 				}
 			}
 		case engine.EventTaskOutcomeAmbiguous:

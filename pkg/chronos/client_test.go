@@ -302,3 +302,88 @@ func TestClientListAndRequeueDeadLetters(t *testing.T) {
 		t.Fatalf("expected 401 APIError, got %v", err)
 	}
 }
+
+func TestClientReadyAndDrainWorker(t *testing.T) {
+	ctx := context.Background()
+	const expectedToken = "drain-test-token"
+
+	readyOK := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/readyz":
+			w.Header().Set("Content-Type", "application/json")
+			if readyOK {
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(chronos.ReadyzStatus{
+					Status:     "ready",
+					ActiveRuns: 2,
+					Workers:    3,
+				})
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(chronos.ReadyzStatus{
+				Status: "not_ready",
+				Error:  "database unavailable",
+			})
+
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workers/drain":
+			if got := r.Header.Get("Authorization"); got != "Bearer "+expectedToken {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+				return
+			}
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"invalid json"}`))
+				return
+			}
+			if body["worker_id"] != "w-1" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"unexpected worker_id"}`))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(chronos.WorkerDrainResponse{
+				WorkerID:      "w-1",
+				Draining:      true,
+				InFlightTasks: 4,
+			})
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"route not found"}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := chronos.NewClient(srv.URL).WithBearerToken(expectedToken)
+
+	// 1. Ready returns 200 ReadyzStatus.
+	status, err := client.Ready(ctx)
+	if err != nil {
+		t.Fatalf("Ready() error = %v", err)
+	}
+	if status.Status != "ready" || status.ActiveRuns != 2 || status.Workers != 3 || status.Error != "" {
+		t.Fatalf("unexpected ReadyzStatus: %+v", status)
+	}
+
+	// 2. Ready returns *APIError on 503.
+	readyOK = false
+	_, err = client.Ready(ctx)
+	var apiErr *chronos.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusServiceUnavailable || apiErr.Message != "database unavailable" {
+		t.Fatalf("expected 503 APIError, got %v", err)
+	}
+
+	// 3. DrainWorker verifies Bearer token, request body, and decoded response.
+	drainResp, err := client.DrainWorker(ctx, "w-1")
+	if err != nil {
+		t.Fatalf("DrainWorker(w-1) error = %v", err)
+	}
+	if drainResp.WorkerID != "w-1" || !drainResp.Draining || drainResp.InFlightTasks != 4 {
+		t.Fatalf("unexpected WorkerDrainResponse: %+v", drainResp)
+	}
+}

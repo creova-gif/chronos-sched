@@ -40,6 +40,12 @@ func TestRecorderCountersAndPrometheusFormat(t *testing.T) {
 	for range 9 {
 		rec.IncTimelinesMerged()
 	}
+	for range 10 {
+		rec.IncDeadLettersRecorded()
+	}
+	for range 11 {
+		rec.IncWorkersDrained()
+	}
 
 	out := rec.RenderPrometheus()
 
@@ -62,6 +68,12 @@ func TestRecorderCountersAndPrometheusFormat(t *testing.T) {
 		"chronos_timelines_forked_total 8",
 		"# TYPE chronos_timelines_merged_total counter",
 		"chronos_timelines_merged_total 9",
+		"# HELP chronos_dead_letters_recorded_total Total number of dead-lettered tasks recorded.",
+		"# TYPE chronos_dead_letters_recorded_total counter",
+		"chronos_dead_letters_recorded_total 10",
+		"# HELP chronos_workers_drained_total Total number of workers drained.",
+		"# TYPE chronos_workers_drained_total counter",
+		"chronos_workers_drained_total 11",
 		"# TYPE chronos_schedule_latency_ms histogram",
 		"chronos_schedule_latency_ms_bucket{le=\"+Inf\"} 0",
 		"chronos_schedule_latency_ms_sum 0",
@@ -158,6 +170,8 @@ func TestRecorderConcurrentUpdates(t *testing.T) {
 				rec.IncStaleFencingTokens()
 				rec.IncTimelinesForked()
 				rec.IncTimelinesMerged()
+				rec.IncDeadLettersRecorded()
+				rec.IncWorkersDrained()
 				rec.ObserveScheduleLatency(time.Duration((id+i)%120) * time.Millisecond)
 			}
 		}(g)
@@ -205,6 +219,8 @@ func TestRecorderConcurrentUpdates(t *testing.T) {
 		"chronos_stale_fencing_tokens_total",
 		"chronos_timelines_forked_total",
 		"chronos_timelines_merged_total",
+		"chronos_dead_letters_recorded_total",
+		"chronos_workers_drained_total",
 	}
 	for _, name := range counters {
 		wantLine := name + " " + strconv.FormatUint(wantTotal, 10) + "\n"
@@ -266,6 +282,27 @@ func TestRecorderHTTPHandler(t *testing.T) {
 
 	if postRR.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /metrics status = %d, want %d", postRR.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestRecorderNilSafety(t *testing.T) {
+	var rec *Recorder
+
+	rec.IncRunsSubmitted()
+	rec.IncTasksLeased()
+	rec.IncTasksCompleted()
+	rec.IncTasksFailed()
+	rec.IncLeasesExpired()
+	rec.IncAmbiguousOutcomes()
+	rec.IncStaleFencingTokens()
+	rec.IncTimelinesForked()
+	rec.IncTimelinesMerged()
+	rec.IncDeadLettersRecorded()
+	rec.IncWorkersDrained()
+	rec.ObserveScheduleLatency(time.Millisecond)
+
+	if got := rec.RenderPrometheus(); got != "" {
+		t.Errorf("nil Recorder.RenderPrometheus() = %q, want empty string", got)
 	}
 }
 

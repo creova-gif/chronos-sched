@@ -137,6 +137,16 @@ tasks:
 		t.Fatalf("unexpected /metrics response (status=%d):\n%s", mResp.StatusCode, string(mBody))
 	}
 
+	// 4c. Probe live coordinator readiness via doctor and drain worker w-cli-1.
+	liveDocOut := runCLI("doctor", "--db", dbPath, "--coordinator", coordURL)
+	if !strings.Contains(liveDocOut, "[PASS] coordinator_readyz") {
+		t.Fatalf("expected [PASS] coordinator_readyz in doctor output:\n%s", liveDocOut)
+	}
+	drainOut := runCLI("worker", "drain", "w-cli-1", "--coordinator", coordURL)
+	if !strings.Contains(drainOut, "Worker w-cli-1 draining=true") {
+		t.Fatalf("unexpected worker drain output:\n%s", drainOut)
+	}
+
 	// 5. Stop server & worker, then run offline SQLite CLI commands: history, replay, diff, branches.
 	_ = workerCmd.Process.Kill()
 	_, _ = workerCmd.Process.Wait()

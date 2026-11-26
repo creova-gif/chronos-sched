@@ -23,7 +23,10 @@ func (c *Coordinator) DrainWorker(workerID string) (WorkerDrainResponse, error) 
 	if !ok || w == nil {
 		return WorkerDrainResponse{}, fmt.Errorf("%w: %s", ErrWorkerNotFound, workerID)
 	}
-	w.Draining = true
+	if !w.Draining {
+		w.Draining = true
+		c.metrics.IncWorkersDrained()
+	}
 
 	inFlight := 0
 	for _, ar := range c.runs {

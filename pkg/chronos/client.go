@@ -316,6 +316,40 @@ func (c *Client) RequeueDeadLetter(ctx context.Context, id int64) (*RequeueDeadL
 	return &resp, nil
 }
 
+// ReadyzStatus represents the Coordinator readiness response from GET /readyz.
+type ReadyzStatus struct {
+	Status     string `json:"status"`
+	ActiveRuns int    `json:"active_runs"`
+	Workers    int    `json:"workers"`
+	Error      string `json:"error,omitempty"`
+}
+
+// Ready queries the Coordinator readiness endpoint (GET /readyz).
+func (c *Client) Ready(ctx context.Context) (ReadyzStatus, error) {
+	var resp ReadyzStatus
+	if err := c.doJSON(ctx, http.MethodGet, "/readyz", nil, &resp); err != nil {
+		return ReadyzStatus{}, err
+	}
+	return resp, nil
+}
+
+// WorkerDrainResponse represents the response from POST /v1/workers/drain.
+type WorkerDrainResponse struct {
+	WorkerID      string `json:"worker_id"`
+	Draining      bool   `json:"draining"`
+	InFlightTasks int    `json:"in_flight_tasks"`
+}
+
+// DrainWorker marks the specified worker as draining so it stops receiving new task leases.
+func (c *Client) DrainWorker(ctx context.Context, workerID string) (WorkerDrainResponse, error) {
+	var resp WorkerDrainResponse
+	reqBody := map[string]string{"worker_id": workerID}
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/workers/drain", reqBody, &resp); err != nil {
+		return WorkerDrainResponse{}, err
+	}
+	return resp, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respBody any) error {
 	var bodyReader io.Reader
 	if reqBody != nil {

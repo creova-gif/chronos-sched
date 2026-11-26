@@ -65,10 +65,7 @@ func run(args []string) error {
 		}
 		return cmdServerStart(args[2:])
 	case "worker":
-		if len(args) < 2 || args[1] != "start" {
-			return fmt.Errorf("usage: chronos worker start [--coordinator %s] [--concurrency 8] [--worker-id id]", defaultCoordURL)
-		}
-		return cmdWorkerStart(args[2:])
+		return cmdWorker(args[1:])
 	case "workflow":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: chronos workflow <run|inspect> ...")
@@ -134,6 +131,7 @@ Usage:
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
   chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec]
   chronos worker start [--coordinator http://127.0.0.1:7420] [--auth-token tok] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
+  chronos worker drain <worker_id> [--coordinator http://127.0.0.1:7420]
   chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
   chronos workflow <pause|resume|cancel> <run_id> [--reason text] [--coordinator http://127.0.0.1:7420]
@@ -521,6 +519,34 @@ func cmdServerStart(args []string) error {
 		},
 	)
 	return nil
+}
+
+func cmdWorker(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: chronos worker <start|drain> ...")
+	}
+	switch args[0] {
+	case "start":
+		return cmdWorkerStart(args[1:])
+	case "drain":
+		fs := flag.NewFlagSet("worker drain", flag.ContinueOnError)
+		coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+			return fmt.Errorf("usage: chronos worker drain <worker_id> [--coordinator %s]", defaultCoordURL)
+		}
+		workerID := strings.TrimSpace(fs.Arg(0))
+		var resp runtime.WorkerDrainResponse
+		if err := rpcPost(strings.TrimRight(*coordURL, "/")+"/v1/workers/drain", runtime.WorkerDrainRequest{WorkerID: workerID}, &resp); err != nil {
+			return err
+		}
+		fmt.Printf("Worker %s draining=%v in_flight=%d\n", resp.WorkerID, resp.Draining, resp.InFlightTasks)
+		return nil
+	default:
+		return fmt.Errorf("unknown worker subcommand %q (expected start or drain)", args[0])
+	}
 }
 
 func cmdWorkerStart(args []string) error {
@@ -1297,6 +1323,15 @@ func cmdDoctor(args []string) error {
 	checks := RunDoctorChecks(context.Background(), *dbPath, *coordURL)
 	report, hasFail := FormatDoctorReport(checks)
 	fmt.Print(report)
+	if strings.TrimSpace(*coordURL) != "" {
+		var ready runtime.ReadyzResponse
+		if err := rpcGet(strings.TrimRight(*coordURL, "/")+"/readyz", &ready); err != nil {
+			fmt.Printf("[FAIL] coordinator_readyz: %v\n", err)
+			hasFail = true
+		} else {
+			fmt.Printf("[PASS] coordinator_readyz (active_runs=%d workers=%d)\n", ready.ActiveRuns, ready.Workers)
+		}
+	}
 	if hasFail {
 		return fmt.Errorf("doctor reported one or more FAIL checks")
 	}
