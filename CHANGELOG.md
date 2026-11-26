@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-Tenant Token-Bucket Rate Limiting (ADR-014):** `RateLimitMiddleware` returning `429 Too Many Requests` with `Retry-After`, configured via `runtime.RateLimitConfig` and `chronos server start` flags (`--rate-limit-rps`, `--rate-limit-burst`).
 - **Row-Level Tenant Run Isolation (ADR-014):** `TenantStore` persistence and `Coordinator` enforcement isolating run access and listings by `X-Chronos-Tenant`.
 - **HTTP Payload Guardrails (ADR-014):** `http.MaxBytesReader` request body size limits on Coordinator HTTP endpoints.
-- **Architecture Decision Record:** Added `ADR-014` (`docs/adr/014-rate-limiting-and-tenant-enforcement.md`).
+- **Workflow Submission Idempotency (ADR-015):** Per-tenant `Idempotency-Key` deduplication on `POST /v1/workflows/run` backed by `IdempotencyStore` (`200` replay, `409` workflow conflict).
+- **Architecture Decision Records:** Added `ADR-014` (`docs/adr/014-rate-limiting-and-tenant-enforcement.md`) and `ADR-015` (`docs/adr/015-idempotency-and-enterprise-hardening.md`).
 
 ## [0.2.0] - 2026-11-26
 
