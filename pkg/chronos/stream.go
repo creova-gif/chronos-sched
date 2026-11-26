@@ -55,9 +55,7 @@ func (c *Client) StreamRunEvents(ctx context.Context, runID string, onEvent func
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Cache-Control", "no-cache")
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
+	c.applyHeaders(req)
 
 	// Dedicated streaming client without the 10s request timeout so long-lived streams stay open.
 	streamClient := &http.Client{}

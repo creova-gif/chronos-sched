@@ -62,8 +62,15 @@ func NewWorker(cfg WorkerConfig) *Worker {
 	cfg.Resources = cloneResources(cfg.Resources)
 
 	w := &Worker{
-		cfg:      cfg,
-		client:   &http.Client{Timeout: 5 * time.Second},
+		cfg: cfg,
+		client: &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        max(64, cfg.Concurrency*2),
+				MaxIdleConnsPerHost: max(32, cfg.Concurrency*2),
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 		handlers: make(map[string]HandlerFunc),
 		active:   make(map[string]activeTaskExec),
 	}

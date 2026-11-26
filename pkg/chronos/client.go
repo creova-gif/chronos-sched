@@ -369,6 +369,15 @@ func (c *Client) ListWorkers(ctx context.Context) ([]WorkerInfo, error) {
 	return resp.Workers, nil
 }
 
+func (c *Client) applyHeaders(req *http.Request) {
+	if c.authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	if c.tenantID != "" {
+		req.Header.Set("X-Chronos-Tenant", c.tenantID)
+	}
+}
+
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respBody any) error {
 	var bodyReader io.Reader
 	if reqBody != nil {
@@ -387,12 +396,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
-	if c.tenantID != "" {
-		req.Header.Set("X-Chronos-Tenant", c.tenantID)
-	}
+	c.applyHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

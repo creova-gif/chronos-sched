@@ -68,9 +68,7 @@ func (c *Client) GetArtifact(ctx context.Context, runID, taskID, name string) ([
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
-	}
+	c.applyHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

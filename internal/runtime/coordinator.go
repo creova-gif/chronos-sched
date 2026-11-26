@@ -586,7 +586,7 @@ func (c *Coordinator) Handler() http.Handler {
 	if rlCfg.OnLimited == nil {
 		rlCfg.OnLimited = c.metrics.IncRateLimited
 	}
-	return ObservabilityMiddleware(logger, TenantMiddleware(RateLimitMiddleware(rlCfg, AuthMiddleware(c.cfg.AuthToken, mux))))
+	return ObservabilityMiddleware(logger, SecurityHeadersMiddleware(TenantMiddleware(RateLimitMiddleware(rlCfg, AuthMiddleware(c.cfg.AuthToken, mux)))))
 }
 
 func (c *Coordinator) assignRunTenant(ctx context.Context, runID string) {
