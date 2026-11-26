@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -38,12 +40,14 @@ type WebhookPayload struct {
 
 // WebhookConfig configures outbound terminal-run webhook delivery.
 type WebhookConfig struct {
-	URL         string
-	Secret      string
-	Timeout     time.Duration
-	MaxAttempts int
-	BaseBackoff time.Duration
-	QueueSize   int
+	URL             string
+	Secret          string
+	Timeout         time.Duration
+	MaxAttempts     int
+	BaseBackoff     time.Duration
+	QueueSize       int
+	BlockPrivateIPs bool
+	AllowRedirects  bool
 }
 
 // WebhookNotifier asynchronously delivers signed webhook notifications from a bounded queue.
@@ -52,6 +56,23 @@ type WebhookNotifier struct {
 	client  *http.Client
 	queue   chan WebhookPayload
 	dropped atomic.Int64
+}
+
+// isBlockedWebhookIP reports whether ip belongs to a loopback, private (RFC1918/ULA),
+// link-local/metadata, multicast, or unspecified address range.
+func isBlockedWebhookIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		ip = ip4
+	}
+	return ip.IsLoopback() ||
+		ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified()
 }
 
 // NewWebhookNotifier validates cfg, applies defaults, and constructs a WebhookNotifier.
@@ -77,12 +98,62 @@ func NewWebhookNotifier(cfg WebhookConfig) (*WebhookNotifier, error) {
 		cfg.QueueSize = defaultWebhookQueueSize
 	}
 
+	var transport http.RoundTripper
+	if cfg.BlockPrivateIPs {
+		host := parsed.Hostname()
+		if strings.EqualFold(host, "localhost") {
+			return nil, fmt.Errorf("webhook URL host %q is blocked when BlockPrivateIPs is enabled", host)
+		}
+		if ip := net.ParseIP(host); ip != nil && isBlockedWebhookIP(ip) {
+			return nil, fmt.Errorf("webhook URL IP %s is blocked when BlockPrivateIPs is enabled", ip)
+		}
+
+		dialer := &net.Dialer{Timeout: cfg.Timeout}
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialHost, port, splitErr := net.SplitHostPort(addr)
+			if splitErr != nil {
+				return nil, splitErr
+			}
+			ips, lookupErr := net.DefaultResolver.LookupIPAddr(ctx, dialHost)
+			if lookupErr != nil {
+				return nil, lookupErr
+			}
+			for _, ipAddr := range ips {
+				if isBlockedWebhookIP(ipAddr.IP) {
+					return nil, fmt.Errorf("webhook target %q resolved to blocked IP %s", dialHost, ipAddr.IP)
+				}
+			}
+			var lastErr error
+			for _, ipAddr := range ips {
+				conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+				if dialErr == nil {
+					return conn, nil
+				}
+				lastErr = dialErr
+			}
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("no valid IP addresses found for webhook host %q", dialHost)
+		}
+		transport = tr
+	}
+
+	client := &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: transport,
+	}
+	if !cfg.AllowRedirects {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+	}
+
 	return &WebhookNotifier{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: cfg.Timeout,
-		},
-		queue: make(chan WebhookPayload, cfg.QueueSize),
+		cfg:    cfg,
+		client: client,
+		queue:  make(chan WebhookPayload, cfg.QueueSize),
 	}, nil
 }
 

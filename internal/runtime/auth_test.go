@@ -240,6 +240,44 @@ func TestAuthMiddlewareWithAuditLogsDenied(t *testing.T) {
 	}
 }
 
+func TestAuthBeforeRateLimitProtectsTenantBucket(t *testing.T) {
+	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := runtime.TenantMiddleware(
+		runtime.AuthMiddlewareWithAudit(
+			"secret-token",
+			nil,
+			runtime.RateLimitMiddleware(
+				runtime.RateLimitConfig{RequestsPerSecond: 0.001, Burst: 1},
+				okHandler,
+			),
+		),
+	)
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+		req.Header.Set("X-Chronos-Tenant", "victim")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated request %d: expected 401 Unauthorized, got %d", i+1, rec.Code)
+		}
+	}
+
+	authReq := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	authReq.Header.Set("Authorization", "Bearer secret-token")
+	authReq.Header.Set("X-Chronos-Tenant", "victim")
+	authRec := httptest.NewRecorder()
+	handler.ServeHTTP(authRec, authReq)
+	if authRec.Code != http.StatusOK {
+		t.Fatalf("authenticated request: expected 200 OK, got %d", authRec.Code)
+	}
+	if got := authRec.Header().Get("X-RateLimit-Remaining"); got != "0" {
+		t.Fatalf("expected X-RateLimit-Remaining=0, got %q", got)
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)

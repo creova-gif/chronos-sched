@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestClientListRuns(t *testing.T) {
@@ -92,6 +94,75 @@ func TestClientListRuns(t *testing.T) {
 		}
 		if apiErr.Message != "invalid status filter" {
 			t.Fatalf("APIError.Message = %q, want %q", apiErr.Message, "invalid status filter")
+		}
+	})
+}
+
+func TestClientWaitForRun(t *testing.T) {
+	t.Run("transitions_to_completed", func(t *testing.T) {
+		var polls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet || r.URL.Path != "/v1/runs/run-1" {
+				t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+			}
+
+			n := polls.Add(1)
+			status := RunStatusPending
+			switch n {
+			case 1:
+				status = RunStatusPending
+			case 2:
+				status = RunStatusRunning
+			default:
+				status = RunStatusCompleted
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(RunSnapshot{
+				State: &RunState{
+					RunID:  "run-1",
+					Status: status,
+				},
+			}); err != nil {
+				t.Fatalf("encode snapshot: %v", err)
+			}
+		}))
+		defer srv.Close()
+
+		client := NewClient(srv.URL)
+		snap, err := client.WaitForRun(context.Background(), "run-1", 5*time.Millisecond)
+		if err != nil {
+			t.Fatalf("WaitForRun error: %v", err)
+		}
+		if snap.State == nil || snap.State.Status != RunStatusCompleted {
+			t.Fatalf("status = %v, want %s", snap.State, RunStatusCompleted)
+		}
+		if got := polls.Load(); got != 3 {
+			t.Fatalf("polls = %d, want 3", got)
+		}
+	})
+
+	t.Run("context_cancelled", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(RunSnapshot{
+				State: &RunState{
+					RunID:  "run-2",
+					Status: RunStatusRunning,
+				},
+			}); err != nil {
+				t.Fatalf("encode snapshot: %v", err)
+			}
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+		defer cancel()
+
+		client := NewClient(srv.URL)
+		_, err := client.WaitForRun(ctx, "run-2", 10*time.Millisecond)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("WaitForRun error = %v, want context.DeadlineExceeded", err)
 		}
 	})
 }

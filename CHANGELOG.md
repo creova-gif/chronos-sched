@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **SDK Run Polling (`pkg/chronos`):** Added `(*Client).WaitForRun(ctx, runID, pollInterval)` polling helper.
+- **Webhook SSRF & Redirect Protection (`internal/runtime`):** Added `WebhookConfig.BlockPrivateIPs`, `WebhookConfig.AllowRedirects`, and `--webhook-block-private-ips` CLI flag.
+- **Middleware Ordering (`internal/runtime`):** Enforced auth-before-rate-limit middleware ordering in `Coordinator.Handler()`.
 - **SDK Run Listing (`pkg/chronos`):** Added `Client.ListRuns` for listing and filtering coordinator runs.
 - **Bearer Auth Audit Logging:** Added `AuthMiddlewareWithAudit` emitting structured `auth_bearer` security audit logs.
 - **TUI Scrubber Exit Hint:** Updated `RenderScrubBanner` to display `[s/esc] Exit` alongside step controls.
