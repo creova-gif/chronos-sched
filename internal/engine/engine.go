@@ -322,6 +322,9 @@ func Apply(state *RunState, ev Event) error {
 			}
 		}
 
+	case EventTaskApprovalRequested, EventTaskApproved, EventTaskRejected:
+		return ApplyApprovalEvent(state, ev)
+
 	default:
 		return fmt.Errorf("unknown event type %q", ev.Type)
 	}
