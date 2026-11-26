@@ -33,6 +33,7 @@ func TestFormatVersion(t *testing.T) {
 }
 
 func TestDoctorChecksUninitialized(t *testing.T) {
+	t.Setenv("CHRONOS_AUTH_TOKEN", "")
 	ctx := context.Background()
 	missingDB := filepath.Join(t.TempDir(), "missing.db")
 
@@ -52,9 +53,13 @@ func TestDoctorChecksUninitialized(t *testing.T) {
 	if byName["sqlite_integrity"].Status != "WARN" {
 		t.Fatalf("expected sqlite_integrity WARN, got %+v", byName["sqlite_integrity"])
 	}
+	if byName["auth_token"].Status != "WARN" {
+		t.Fatalf("expected auth_token WARN, got %+v", byName["auth_token"])
+	}
 }
 
 func TestDoctorChecksInitializedAndCoordinator(t *testing.T) {
+	t.Setenv("CHRONOS_AUTH_TOKEN", "test-token")
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "chronos.db")
 
@@ -95,7 +100,7 @@ func TestDoctorChecksInitializedAndCoordinator(t *testing.T) {
 	}
 
 	byName := indexChecks(checks)
-	for _, name := range []string{"go_runtime", "sqlite_journal", "sqlite_integrity", "coordinator_health"} {
+	for _, name := range []string{"go_runtime", "sqlite_journal", "sqlite_integrity", "auth_token", "coordinator_health"} {
 		c, ok := byName[name]
 		if !ok {
 			t.Fatalf("missing check %q in %+v", name, checks)
@@ -104,11 +109,43 @@ func TestDoctorChecksInitializedAndCoordinator(t *testing.T) {
 			t.Fatalf("expected %s PASS, got %+v", name, c)
 		}
 	}
-	if !strings.Contains(byName["sqlite_journal"].Detail, "1 runs") {
-		t.Fatalf("expected run count in sqlite_journal detail, got %q", byName["sqlite_journal"].Detail)
+	if !strings.Contains(byName["sqlite_journal"].Detail, "runs=1") {
+		t.Fatalf("expected runs=1 in sqlite_journal detail, got %q", byName["sqlite_journal"].Detail)
+	}
+	if !strings.Contains(byName["sqlite_journal"].Detail, "ping=ok") {
+		t.Fatalf("expected ping=ok in sqlite_journal detail, got %q", byName["sqlite_journal"].Detail)
 	}
 	if !strings.Contains(byName["sqlite_integrity"].Detail, "ok") {
 		t.Fatalf("expected ok in sqlite_integrity detail, got %q", byName["sqlite_integrity"].Detail)
+	}
+}
+
+func TestDoctorChecksAuthPosture(t *testing.T) {
+	ctx := context.Background()
+	missingDB := filepath.Join(t.TempDir(), "missing.db")
+
+	t.Setenv("CHRONOS_AUTH_TOKEN", "")
+	checks := RunDoctorChecks(ctx, missingDB, "")
+	report, hasFailure := FormatDoctorReport(checks)
+	if hasFailure {
+		t.Fatalf("expected WARN not to fail doctor report:\n%s", report)
+	}
+	authCheck := indexChecks(checks)["auth_token"]
+	if authCheck.Status != "WARN" {
+		t.Fatalf("expected auth_token WARN when unset, got %+v", authCheck)
+	}
+	if !strings.Contains(authCheck.Detail, "CHRONOS_AUTH_TOKEN is unset") {
+		t.Fatalf("unexpected auth_token WARN detail: %q", authCheck.Detail)
+	}
+
+	t.Setenv("CHRONOS_AUTH_TOKEN", "super-secret-value")
+	checks = RunDoctorChecks(ctx, missingDB, "")
+	authCheck = indexChecks(checks)["auth_token"]
+	if authCheck.Status != "PASS" {
+		t.Fatalf("expected auth_token PASS when set, got %+v", authCheck)
+	}
+	if strings.Contains(authCheck.Detail, "super-secret-value") {
+		t.Fatalf("auth_token detail must not leak token value: %q", authCheck.Detail)
 	}
 }
 

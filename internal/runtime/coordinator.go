@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -724,13 +725,52 @@ func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Coordinator) handleListRuns(w http.ResponseWriter, r *http.Request) {
-	runs, err := c.store.ListRuns(r.Context())
+	const (
+		defaultLimit = 100
+		maxLimit     = 500
+	)
+
+	q := r.URL.Query()
+
+	var statuses []engine.RunStatus
+	if rawStatus := q.Get("status"); rawStatus != "" {
+		for _, part := range strings.Split(rawStatus, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			st := engine.RunStatus(trimmed)
+			switch st {
+			case engine.RunStatusRunning,
+				engine.RunStatusPaused,
+				engine.RunStatusCompleted,
+				engine.RunStatusFailed,
+				engine.RunStatusCancelled:
+				statuses = append(statuses, st)
+			default:
+				writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("invalid status %q", trimmed)})
+				return
+			}
+		}
+	}
+
+	limit := defaultLimit
+	if q.Has("limit") {
+		parsed, err := strconv.Atoi(q.Get("limit"))
+		if err != nil || parsed <= 0 || parsed > maxLimit {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "limit must be an integer between 1 and 500"})
+			return
+		}
+		limit = parsed
+	}
+
+	runs, err := c.store.ListRuns(r.Context(), statuses...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
 	if ts, ok := c.store.(store.TenantStore); ok {
-		allowedIDs, err := ts.ListRunIDsByTenant(r.Context(), TenantFromContext(r.Context()))
+		allowedIDs, err := ts.ListRunIDsByTenant(r.Context(), TenantFromContext(r.Context()), statuses...)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
@@ -746,6 +786,12 @@ func (c *Coordinator) handleListRuns(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		runs = filtered
+	}
+	if len(runs) > limit {
+		runs = runs[:limit]
+	}
+	if runs == nil {
+		runs = []store.RunRecord{}
 	}
 	writeJSON(w, http.StatusOK, runs)
 }

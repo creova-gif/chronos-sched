@@ -115,6 +115,22 @@ paths:
     get:
       summary: List workflow runs
       operationId: listRuns
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Optional comma-separated run status filter (RUNNING|PAUSED|COMPLETED|FAILED|CANCELLED)
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of workflow runs to return
+          schema:
+            type: integer
+            default: 100
+            minimum: 1
+            maximum: 500
       responses:
         "200":
           description: List of stored run records
@@ -124,6 +140,12 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/RunRecord"
+        "400":
+          description: Invalid status filter or limit parameter
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "500":
           description: Internal store error
           content:

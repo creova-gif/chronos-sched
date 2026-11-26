@@ -35,8 +35,8 @@ func FormatVersion() string {
 	return fmt.Sprintf("chronos %s (commit %s, built %s)", version, commit, date)
 }
 
-// RunDoctorChecks executes local runtime, SQLite journal, integrity, and
-// optional coordinator health diagnostics.
+// RunDoctorChecks executes local runtime, SQLite journal, integrity, auth
+// posture, and optional coordinator health diagnostics.
 func RunDoctorChecks(ctx context.Context, dbPath, coordURL string) []DoctorCheck {
 	checks := []DoctorCheck{
 		{
@@ -46,6 +46,7 @@ func RunDoctorChecks(ctx context.Context, dbPath, coordURL string) []DoctorCheck
 		},
 		checkSQLiteJournal(ctx, dbPath),
 		checkSQLiteIntegrity(ctx, dbPath),
+		checkAuthPosture(),
 	}
 
 	if strings.TrimSpace(coordURL) != "" {
@@ -88,6 +89,14 @@ func checkSQLiteJournal(ctx context.Context, dbPath string) DoctorCheck {
 	}
 	defer func() { _ = st.Close() }()
 
+	if err := st.Ping(ctx); err != nil {
+		return DoctorCheck{
+			Name:   "sqlite_journal",
+			Status: "FAIL",
+			Detail: fmt.Sprintf("ping: %v", err),
+		}
+	}
+
 	runs, err := st.ListRuns(ctx)
 	if err != nil {
 		return DoctorCheck{
@@ -99,7 +108,22 @@ func checkSQLiteJournal(ctx context.Context, dbPath string) DoctorCheck {
 	return DoctorCheck{
 		Name:   "sqlite_journal",
 		Status: "PASS",
-		Detail: fmt.Sprintf("%s (%d runs)", dbPath, len(runs)),
+		Detail: fmt.Sprintf("%s (runs=%d, ping=ok)", dbPath, len(runs)),
+	}
+}
+
+func checkAuthPosture() DoctorCheck {
+	if strings.TrimSpace(os.Getenv("CHRONOS_AUTH_TOKEN")) == "" {
+		return DoctorCheck{
+			Name:   "auth_token",
+			Status: "WARN",
+			Detail: "CHRONOS_AUTH_TOKEN is unset (Coordinator API unauthenticated unless --auth-token is passed)",
+		}
+	}
+	return DoctorCheck{
+		Name:   "auth_token",
+		Status: "PASS",
+		Detail: "CHRONOS_AUTH_TOKEN is set",
 	}
 }
 
