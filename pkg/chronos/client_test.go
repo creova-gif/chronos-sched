@@ -191,3 +191,114 @@ tasks:
 		t.Fatalf("expected AdoptedCount=1, got %d", mergeResp.AdoptedCount)
 	}
 }
+
+func TestClientListAndRequeueDeadLetters(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const expectedToken = "secret-dlq-token"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer "+expectedToken {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/dlq":
+			allParam := r.URL.Query().Get("all")
+			entries := []chronos.DeadLetterEntry{
+				{
+					ID:           42,
+					RunID:        "run-1",
+					TaskID:       "task-a",
+					WorkflowName: "wf-demo",
+					Attempt:      3,
+					Reason:       "boom",
+					FailedAtNs:   1700000000000,
+					Requeued:     false,
+				},
+			}
+			if allParam == "true" {
+				entries = append(entries, chronos.DeadLetterEntry{
+					ID:            41,
+					RunID:         "run-0",
+					TaskID:        "task-z",
+					WorkflowName:  "wf-demo",
+					Attempt:       2,
+					Reason:        "timeout",
+					FailedAtNs:    1699999999000,
+					Requeued:      true,
+					RequeuedRunID: "run-0-retry",
+				})
+			} else if allParam != "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"error":"unexpected all query param"}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(entries)
+
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/dlq/42/requeue":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(chronos.RequeueDeadLetterResponse{
+				DeadLetterID:  42,
+				RequeuedRunID: "run-1-requeue",
+			})
+
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/dlq/999/requeue":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"dead-letter entry not found"}`))
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"route not found"}`))
+		}
+	}))
+	defer srv.Close()
+
+	client := chronos.NewClient(srv.URL).WithBearerToken(expectedToken)
+
+	// 1. List active DLQ entries (includeRequeued=false -> no ?all=true).
+	active, err := client.ListDeadLetters(ctx, false)
+	if err != nil {
+		t.Fatalf("ListDeadLetters(false): %v", err)
+	}
+	if len(active) != 1 || active[0].ID != 42 || active[0].Requeued {
+		t.Fatalf("unexpected active DLQ entries: %+v", active)
+	}
+
+	// 2. List all DLQ entries (includeRequeued=true -> ?all=true).
+	all, err := client.ListDeadLetters(ctx, true)
+	if err != nil {
+		t.Fatalf("ListDeadLetters(true): %v", err)
+	}
+	if len(all) != 2 || all[1].ID != 41 || !all[1].Requeued || all[1].RequeuedRunID != "run-0-retry" {
+		t.Fatalf("unexpected all DLQ entries: %+v", all)
+	}
+
+	// 3. Requeue existing DLQ entry.
+	requeueResp, err := client.RequeueDeadLetter(ctx, 42)
+	if err != nil {
+		t.Fatalf("RequeueDeadLetter(42): %v", err)
+	}
+	if requeueResp.DeadLetterID != 42 || requeueResp.RequeuedRunID != "run-1-requeue" {
+		t.Fatalf("unexpected RequeueDeadLetterResponse: %+v", requeueResp)
+	}
+
+	// 4. Non-2xx error handling: 404 Not Found.
+	_, err = client.RequeueDeadLetter(ctx, 999)
+	var apiErr *chronos.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound || apiErr.Message != "dead-letter entry not found" {
+		t.Fatalf("expected 404 APIError, got %v", err)
+	}
+
+	// 5. Non-2xx error handling: 401 Unauthorized when bearer token is missing/wrong.
+	unauthClient := chronos.NewClient(srv.URL).WithBearerToken("wrong-token")
+	_, err = unauthClient.ListDeadLetters(ctx, false)
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 APIError, got %v", err)
+	}
+}
