@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -59,8 +58,8 @@ func (c *Coordinator) IsWorkerDraining(workerID string) bool {
 // handleWorkerDrain handles POST /v1/workers/drain requests to mark a worker as draining.
 func (c *Coordinator) handleWorkerDrain(w http.ResponseWriter, r *http.Request) {
 	var req WorkerDrainRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	req.WorkerID = strings.TrimSpace(req.WorkerID)

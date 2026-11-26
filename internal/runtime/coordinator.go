@@ -597,10 +597,9 @@ func (c *Coordinator) assignRunTenant(ctx context.Context, runID string) {
 }
 
 func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req SubmitWorkflowRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if err := c.checkTenantRunQuota(r.Context()); err != nil {
@@ -685,8 +684,8 @@ func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req MergeRunRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if !c.authorizeRunTenant(w, r, req.BranchRunID) {
@@ -756,10 +755,9 @@ func (c *Coordinator) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	if !c.authorizeRunTenant(w, r, parentID) {
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req ForkRunRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if err := c.checkTenantRunQuota(r.Context()); err != nil {
@@ -786,8 +784,8 @@ func (c *Coordinator) handleForkRun(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) handleWorkerRegister(w http.ResponseWriter, r *http.Request) {
 	var req WorkerRegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if req.WorkerID == "" {
@@ -817,8 +815,8 @@ func (c *Coordinator) handleWorkerRegister(w http.ResponseWriter, r *http.Reques
 
 func (c *Coordinator) handleWorkerHeartbeat(w http.ResponseWriter, r *http.Request) {
 	var req HeartbeatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if req.WorkerID == "" {
@@ -869,8 +867,8 @@ func (c *Coordinator) renewLeasesLocked(workerID string, leases []ActiveLease, n
 
 func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 	var req LeasePollRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	if req.WorkerID == "" {
@@ -949,8 +947,8 @@ func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) handleTaskStarted(w http.ResponseWriter, r *http.Request) {
 	var req TaskStartedRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	c.applyTaskCommand(w, r, req.RunID, engine.CmdMarkTaskStarted{
@@ -962,8 +960,8 @@ func (c *Coordinator) handleTaskStarted(w http.ResponseWriter, r *http.Request) 
 
 func (c *Coordinator) handleTaskComplete(w http.ResponseWriter, r *http.Request) {
 	var req TaskCompleteRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	c.applyTaskCommand(w, r, req.RunID, engine.CmdCompleteTask{
@@ -976,8 +974,8 @@ func (c *Coordinator) handleTaskComplete(w http.ResponseWriter, r *http.Request)
 
 func (c *Coordinator) handleTaskFail(w http.ResponseWriter, r *http.Request) {
 	var req TaskFailRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+	if err := decodeJSONBody(w, r, &req, 0); err != nil {
+		writeJSONDecodeError(w, err)
 		return
 	}
 	c.applyTaskCommand(w, r, req.RunID, engine.CmdFailTask{

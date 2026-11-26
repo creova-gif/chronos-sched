@@ -99,6 +99,8 @@ func run(args []string) error {
 		return cmdDiff(args[1:])
 	case "branches":
 		return cmdBranches(args[1:])
+	case "runs":
+		return cmdRuns(args[1:])
 	case "merge":
 		return cmdMerge(args[1:])
 	case "export":
@@ -149,6 +151,7 @@ Usage:
   chronos fork <run_id> --checkpoint <N|name> [--override task.key=value]... [--coordinator http://127.0.0.1:7420]
   chronos diff <run_a> <run_b> [--db .chronos/chronos.db]
   chronos branches [--db .chronos/chronos.db]
+  chronos runs [--status RUNNING|COMPLETED|FAILED] [--coordinator http://127.0.0.1:7420]
   chronos merge <base_run> <branch_run> [--task id]... [--prefer-branch] [--apply] [--new-run-id id] [--coordinator http://127.0.0.1:7420] [--db .chronos/chronos.db]
   chronos export <run_id> [-o bundle.json] [--redact] [--db .chronos/chronos.db]
   chronos import <bundle.json> [--run-id id] [--db .chronos/chronos.db]
@@ -963,6 +966,39 @@ func cmdBranches(args []string) error {
 		return err
 	}
 	fmt.Println(store.FormatBranchTree(runs))
+	return nil
+}
+
+func cmdRuns(args []string) error {
+	fs := flag.NewFlagSet("runs", flag.ContinueOnError)
+	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+	statusFilter := fs.String("status", "", "optional run status filter (RUNNING, COMPLETED, FAILED)")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	var runs []store.RunRecord
+	if err := rpcGet(strings.TrimRight(*coordURL, "/")+"/v1/runs", &runs); err != nil {
+		return err
+	}
+	wantStatus := strings.ToUpper(strings.TrimSpace(*statusFilter))
+	var filtered []store.RunRecord
+	for _, r := range runs {
+		if wantStatus != "" && strings.ToUpper(string(r.Status)) != wantStatus {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	if len(filtered) == 0 {
+		fmt.Println("No runs found.")
+		return nil
+	}
+	for _, r := range filtered {
+		parent := r.ParentRunID
+		if parent == "" {
+			parent = "-"
+		}
+		fmt.Printf("%s workflow=%s status=%s parent=%s\n", r.RunID, r.WorkflowName, r.Status, parent)
+	}
 	return nil
 }
 
