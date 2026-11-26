@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -177,12 +178,24 @@ func (w *Worker) pollLoop(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(w.cfg.PollInterval):
+			case <-time.After(w.pollDelay()):
 			}
 			continue
 		}
 		w.executeLease(ctx, resp.Lease)
 	}
+}
+
+func (w *Worker) pollDelay() time.Duration {
+	base := w.cfg.PollInterval
+	if base <= 0 {
+		return 0
+	}
+	jitterMax := int64(base / 4)
+	if jitterMax <= 0 {
+		return base
+	}
+	return base + time.Duration(rand.Int64N(jitterMax+1))
 }
 
 func (w *Worker) executeLease(parentCtx context.Context, lease *LeasedTask) {

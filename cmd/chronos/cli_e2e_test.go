@@ -113,6 +113,27 @@ tasks:
 	}
 	waitDone("run_cli_1")
 
+	// 3b. Idempotent workflow submission via --idempotency-key returns the same run_id twice.
+	idemOut1 := runCLI("workflow", "run", wfPath, "--idempotency-key", "cli-idem-key-1", "--coordinator", coordURL)
+	idemOut2 := runCLI("workflow", "run", wfPath, "--idempotency-key", "cli-idem-key-1", "--coordinator", coordURL)
+	extractRunID := func(out string) string {
+		_, after, ok := strings.Cut(out, " as ")
+		if !ok {
+			t.Fatalf("unexpected idempotent submit output: %s", out)
+		}
+		runID, _, ok := strings.Cut(after, " ")
+		if !ok || runID == "" {
+			t.Fatalf("failed to parse run_id from output: %s", out)
+		}
+		return runID
+	}
+	idemRunID1 := extractRunID(idemOut1)
+	idemRunID2 := extractRunID(idemOut2)
+	if idemRunID1 != idemRunID2 {
+		t.Fatalf("expected identical run_id for idempotent CLI runs, got %q and %q", idemRunID1, idemRunID2)
+	}
+	waitDone(idemRunID1)
+
 	// 4. Fork run_cli_2 from checkpoint cp_one with override on step2.
 	forkOut := runCLI("fork", "run_cli_1", "--checkpoint", "cp_one", "--override", "step2.mode=shadow", "--new-run-id", "run_cli_2", "--coordinator", coordURL)
 	if !strings.Contains(forkOut, "Forked run_cli_2 from run_cli_1") {

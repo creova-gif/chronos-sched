@@ -546,3 +546,109 @@ func TestClientWithTenantHeader(t *testing.T) {
 		}
 	})
 }
+
+func TestClientSubmitWorkflowIdempotent(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	t.Run("201 Created with Idempotency-Key", func(t *testing.T) {
+		var gotKey string
+		var gotMethod, gotPath string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod = r.Method
+			gotPath = r.URL.Path
+			gotKey = r.Header.Get("Idempotency-Key")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(chronos.SubmitResponse{
+				RunID:        "run-idem-1",
+				WorkflowName: "demo",
+				TaskCount:    2,
+			})
+		}))
+		defer srv.Close()
+
+		client := chronos.NewClient(srv.URL)
+		resp, err := client.SubmitWorkflowIdempotent(ctx, "run-idem-1", "name: demo", "key-123")
+		if err != nil {
+			t.Fatalf("SubmitWorkflowIdempotent() error = %v", err)
+		}
+		if gotMethod != http.MethodPost || gotPath != "/v1/workflows/run" {
+			t.Fatalf("unexpected request %s %s", gotMethod, gotPath)
+		}
+		if gotKey != "key-123" {
+			t.Fatalf("expected Idempotency-Key %q, got %q", "key-123", gotKey)
+		}
+		if resp.RunID != "run-idem-1" || resp.WorkflowName != "demo" || resp.TaskCount != 2 {
+			t.Fatalf("unexpected SubmitResponse: %+v", resp)
+		}
+	})
+
+	t.Run("200 OK replay decoding", func(t *testing.T) {
+		var gotKey string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotKey = r.Header.Get("Idempotency-Key")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(chronos.SubmitResponse{
+				RunID:        "run-idem-2",
+				WorkflowName: "replay",
+				TaskCount:    3,
+			})
+		}))
+		defer srv.Close()
+
+		client := chronos.NewClient(srv.URL)
+		resp, err := client.SubmitWorkflowIdempotent(ctx, "run-idem-2", "name: replay", "key-replay")
+		if err != nil {
+			t.Fatalf("SubmitWorkflowIdempotent() error = %v", err)
+		}
+		if gotKey != "key-replay" {
+			t.Fatalf("expected Idempotency-Key %q, got %q", "key-replay", gotKey)
+		}
+		if resp.RunID != "run-idem-2" || resp.WorkflowName != "replay" || resp.TaskCount != 3 {
+			t.Fatalf("unexpected SubmitResponse: %+v", resp)
+		}
+	})
+
+	t.Run("empty idempotency key omits header", func(t *testing.T) {
+		var hasKey bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, hasKey = r.Header["Idempotency-Key"]
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(chronos.SubmitResponse{RunID: "run-no-key"})
+		}))
+		defer srv.Close()
+
+		client := chronos.NewClient(srv.URL)
+		if _, err := client.SubmitWorkflowIdempotent(ctx, "run-no-key", "name: demo", ""); err != nil {
+			t.Fatalf("SubmitWorkflowIdempotent() error = %v", err)
+		}
+		if hasKey {
+			t.Fatalf("expected Idempotency-Key header to be omitted when key is empty")
+		}
+	})
+
+	t.Run("409 Conflict returns APIError", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":"idempotency key conflict"}`))
+		}))
+		defer srv.Close()
+
+		client := chronos.NewClient(srv.URL)
+		_, err := client.SubmitWorkflowIdempotent(ctx, "run-conflict", "name: demo", "key-conflict")
+		var apiErr *chronos.APIError
+		if !errors.As(err, &apiErr) {
+			t.Fatalf("expected *chronos.APIError, got %T (%v)", err, err)
+		}
+		if apiErr.StatusCode != http.StatusConflict {
+			t.Fatalf("expected status 409, got %d", apiErr.StatusCode)
+		}
+		if apiErr.Message != "idempotency key conflict" {
+			t.Fatalf("expected error message %q, got %q", "idempotency key conflict", apiErr.Message)
+		}
+	})
+}

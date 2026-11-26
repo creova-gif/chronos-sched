@@ -142,7 +142,7 @@ Usage:
   chronos worker start [--coordinator http://127.0.0.1:7420] [--auth-token tok] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos worker list [--coordinator http://127.0.0.1:7420]
   chronos worker drain <worker_id> [--coordinator http://127.0.0.1:7420]
-  chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
+  chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id] [--idempotency-key key]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
   chronos workflow <pause|resume|cancel> <run_id> [--reason text] [--coordinator http://127.0.0.1:7420]
   chronos history <run_id> [--task id] [--worker id] [--type EVENT] [--min-seq N] [--max-seq N] [--redact] [--db .chronos/chronos.db]
@@ -681,6 +681,7 @@ func cmdWorkflowRun(args []string) error {
 	fs := flag.NewFlagSet("workflow run", flag.ContinueOnError)
 	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
 	runID := fs.String("run-id", "", "optional explicit run ID")
+	idemKey := fs.String("idempotency-key", "", "optional idempotency key for deduplicated submission")
 	if err := parseFlagsAnyOrder(fs, args); err != nil {
 		return err
 	}
@@ -691,8 +692,12 @@ func cmdWorkflowRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	var headers map[string]string
+	if *idemKey != "" {
+		headers = map[string]string{"Idempotency-Key": *idemKey}
+	}
 	var resp runtime.SubmitWorkflowResponse
-	if err := rpcPost(*coordURL+"/v1/workflows/run", runtime.SubmitWorkflowRequest{
+	if err := rpcPostWithHeaders(*coordURL+"/v1/workflows/run", headers, runtime.SubmitWorkflowRequest{
 		RunID:        *runID,
 		WorkflowYAML: string(rawYAML),
 	}, &resp); err != nil {
@@ -1476,6 +1481,10 @@ func applyCLIHeaders(req *http.Request) {
 }
 
 func rpcPost(url string, reqBody any, respBody any) error {
+	return rpcPostWithHeaders(url, nil, reqBody, respBody)
+}
+
+func rpcPostWithHeaders(url string, headers map[string]string, reqBody any, respBody any) error {
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
@@ -1486,6 +1495,9 @@ func rpcPost(url string, reqBody any, respBody any) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	applyCLIHeaders(req)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

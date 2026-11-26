@@ -177,3 +177,66 @@ func TestIdempotencyStorePutGetTenantIsolationAndReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIdempotencyStorePrune(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "chronos-idempotency-prune.db")
+
+	st, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	// Pruning before idempotency_keys exists returns (0, nil).
+	deleted, err := st.PruneIdempotencyKeys(ctx, 1000)
+	if err != nil || deleted != 0 {
+		t.Fatalf("PruneIdempotencyKeys(missing table): got (%d, %v), want (0, nil)", deleted, err)
+	}
+
+	cutoffNs := int64(1000)
+	records := []store.IdempotencyRecord{
+		{TenantID: "acme", Key: "old-1", RunID: "run-old-1", WorkflowHash: "h1", CreatedAtNs: cutoffNs - 500},
+		{TenantID: "globex", Key: "old-2", RunID: "run-old-2", WorkflowHash: "h2", CreatedAtNs: cutoffNs - 1},
+		{TenantID: "acme", Key: "boundary", RunID: "run-boundary", WorkflowHash: "h3", CreatedAtNs: cutoffNs},
+		{TenantID: "acme", Key: "new-1", RunID: "run-new-1", WorkflowHash: "h4", CreatedAtNs: cutoffNs + 500},
+	}
+	for _, rec := range records {
+		if err := st.PutIdempotencyKey(ctx, rec); err != nil {
+			t.Fatalf("PutIdempotencyKey(%s): %v", rec.Key, err)
+		}
+	}
+
+	// OpenReadOnly rejects PruneIdempotencyKeys with ErrStoreReadOnly.
+	ro, err := sqlite.OpenReadOnly(dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadOnly: %v", err)
+	}
+	defer func() { _ = ro.Close() }()
+	if _, err := ro.PruneIdempotencyKeys(ctx, cutoffNs); !errors.Is(err, store.ErrStoreReadOnly) {
+		t.Fatalf("read-only prune: expected ErrStoreReadOnly, got %v", err)
+	}
+
+	// Keys strictly older than cutoffNs are deleted; keys >= cutoffNs are retained.
+	deleted, err = st.PruneIdempotencyKeys(ctx, cutoffNs)
+	if err != nil {
+		t.Fatalf("PruneIdempotencyKeys: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("PruneIdempotencyKeys deleted %d rows, want 2", deleted)
+	}
+
+	for _, rec := range records[:2] {
+		if _, ok, err := st.GetIdempotencyKey(ctx, rec.TenantID, rec.Key); err != nil || ok {
+			t.Fatalf("expected old key %q to be deleted, got (ok=%v, err=%v)", rec.Key, ok, err)
+		}
+	}
+	for _, rec := range records[2:] {
+		got, ok, err := st.GetIdempotencyKey(ctx, rec.TenantID, rec.Key)
+		if err != nil || !ok || got != rec {
+			t.Fatalf("expected key %q to be retained, got (%+v, %v, %v)", rec.Key, got, ok, err)
+		}
+	}
+}

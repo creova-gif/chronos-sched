@@ -79,3 +79,25 @@ func (s *Store) PutIdempotencyKey(ctx context.Context, rec store.IdempotencyReco
 	}
 	return nil
 }
+
+// PruneIdempotencyKeys deletes idempotency keys with created_at_ns < cutoffNs
+// and returns the number of deleted rows.
+// If the idempotency_keys table does not yet exist, it returns 0, nil.
+func (s *Store) PruneIdempotencyKeys(ctx context.Context, cutoffNs int64) (int64, error) {
+	if s.readOnly {
+		return 0, store.ErrStoreReadOnly
+	}
+
+	res, err := s.writer.ExecContext(ctx, `DELETE FROM idempotency_keys WHERE created_at_ns < ?`, cutoffNs)
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("prune idempotency keys: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("prune idempotency keys rows affected: %w", err)
+	}
+	return n, nil
+}
