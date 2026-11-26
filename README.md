@@ -50,6 +50,7 @@ chronos inspect-at run_001 --checkpoint 3
 ## Documentation
 
 - [Milestone 1 Design & Engineering Review](docs/designs/chronos-sched-m1.md)
+- [Milestone 4 Design: Full Product Engineering & Scope Expansion](docs/designs/chronos-sched-m4.md)
 - [ADR-001: Event Journal, SQLite WAL & Fencing Model](docs/adr/001-event-journal-sqlite-fencing.md)
 - [ADR-002: Programmable Scheduling Constraints](docs/adr/002-programmable-scheduling-constraints.md)
 - [ADR-003: Timeline Merge & Cherry-Pick](docs/adr/003-timeline-merge-and-cherry-pick.md)
@@ -61,6 +62,7 @@ chronos inspect-at run_001 --checkpoint 3
 - [ADR-009: Webhook Notifications & Retries](docs/adr/009-webhook-notifications-and-retries.md)
 - [ADR-010: Coordinator Bearer Auth](docs/adr/010-coordinator-bearer-auth.md)
 - [ADR-011: Dead-Letter Queue Requeue, Middleware & Readiness Probe](docs/adr/011-dlq-requeue-and-observability.md)
+- [ADR-012: Task Artifacts and Embedded Flight-Recorder Web UI](docs/adr/012-task-artifacts-and-embedded-ui.md)
 - [Dead-Letter Queue (`chronos dlq list`), JSON Request Logging (`slog`), W3C `traceparent` & TUI Time-Travel Scrubber (`[s]` in TUI)](CHANGELOG.md)
 - [OpenAPI 3.1 Specification](docs/api/openapi.yaml)
 - [CHANGELOG](CHANGELOG.md)

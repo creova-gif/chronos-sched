@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChronosSched Flight-Recorder</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --surface: #121826;
+      --surface-alt: #182032;
+      --border: #253047;
+      --text: #e6edf7;
+      --muted: #8b9bb4;
+      --accent: #38bdf8;
+      --accent-hover: #0ea5e9;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      font-family: var(--mono);
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .badge.ok { color: var(--ok); border-color: rgba(34, 197, 94, 0.35); }
+    .badge.warn { color: var(--warn); border-color: rgba(245, 158, 11, 0.35); }
+    .badge.err { color: var(--err); border-color: rgba(239, 68, 68, 0.35); }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    input[type="password"], input[type="text"] {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.65rem;
+      font-size: 0.85rem;
+      font-family: var(--mono);
+      min-width: 220px;
+    }
+    button {
+      background: var(--surface-alt);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.75rem;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button:hover:not(:disabled) {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+    button.primary {
+      background: var(--accent);
+      color: #04101d;
+      border-color: var(--accent);
+      font-weight: 600;
+    }
+    button.primary:hover:not(:disabled) {
+      background: var(--accent-hover);
+      color: #04101d;
+    }
+    button.danger {
+      border-color: rgba(239, 68, 68, 0.45);
+      color: #fca5a5;
+    }
+    button.danger:hover:not(:disabled) {
+      border-color: var(--err);
+      color: var(--err);
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    main {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 1.5rem;
+      display: grid;
+      gap: 1.25rem;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+    }
+    .stat-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+    .stat-value {
+      margin-top: 0.35rem;
+      font-size: 1.5rem;
+      font-weight: 600;
+      font-family: var(--mono);
+    }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.75rem;
+    }
+    .section-header h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .table-wrap {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    th {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    td.mono {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    .empty {
+      color: var(--muted);
+      font-size: 0.875rem;
+      padding: 0.75rem 0;
+    }
+    #banner {
+      display: none;
+      padding: 0.65rem 1rem;
+      border-radius: 8px;
+      font-size: 0.875rem;
+      border: 1px solid var(--border);
+      background: var(--surface-alt);
+    }
+    #banner.error {
+      display: block;
+      border-color: rgba(239, 68, 68, 0.5);
+      color: #fecaca;
+    }
+    #banner.info {
+      display: block;
+      border-color: rgba(56, 189, 248, 0.45);
+      color: #bae6fd;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>ChronosSched Flight-Recorder</h1>
+      <span id="ready-badge" class="badge">checking...</span>
+    </div>
+    <div class="controls">
+      <input id="auth-token" type="password" placeholder="Bearer token (optional)" aria-label="Bearer token">
+      <button id="save-token" type="button">Save Token</button>
+      <button id="refresh-btn" class="primary" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="banner" role="status"></div>
+
+    <section class="stats" aria-label="Coordinator readiness">
+      <div class="card">
+        <div class="stat-label">Coordinator Status</div>
+        <div id="stat-status" class="stat-value">-</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Active Runs</div>
+        <div id="stat-active-runs" class="stat-value">-</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Registered Workers</div>
+        <div id="stat-workers" class="stat-value">-</div>
+      </div>
+      <div class="card">
+        <div class="stat-label">Dead-Letter Entries</div>
+        <div id="stat-dlq" class="stat-value">-</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-header">
+        <h2>Workflow Runs</h2>
+        <span id="runs-count" class="badge">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Run ID</th>
+              <th>Workflow</th>
+              <th>Status</th>
+              <th>Parent Run</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody id="runs-body">
+            <tr><td colspan="5" class="empty">Loading runs...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-header">
+        <h2>Registered Workers</h2>
+        <span id="workers-count" class="badge">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Worker ID</th>
+              <th>PID</th>
+              <th>Concurrency</th>
+              <th>State</th>
+              <th>Last Heartbeat</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="workers-body">
+            <tr><td colspan="6" class="empty">Loading workers...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="section-header">
+        <h2>Dead-Letter Queue</h2>
+        <span id="dlq-count" class="badge">0</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Run / Task</th>
+              <th>Workflow</th>
+              <th>Attempt</th>
+              <th>Reason</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="dlq-body">
+            <tr><td colspan="6" class="empty">Loading dead-letter entries...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    (function () {
+      const TOKEN_KEY = "chronos_auth_token";
+      const tokenInput = document.getElementById("auth-token");
+      const saveTokenBtn = document.getElementById("save-token");
+      const refreshBtn = document.getElementById("refresh-btn");
+      const banner = document.getElementById("banner");
+
+      tokenInput.value = localStorage.getItem(TOKEN_KEY) || "";
+
+      function showBanner(msg, kind) {
+        if (!msg) {
+          banner.className = "";
+          banner.textContent = "";
+          return;
+        }
+        banner.className = kind === "error" ? "error" : "info";
+        banner.textContent = msg;
+      }
+
+      function authHeaders(extra) {
+        const headers = Object.assign({}, extra || {});
+        const tok = (localStorage.getItem(TOKEN_KEY) || "").trim();
+        if (tok) {
+          headers["Authorization"] = "Bearer " + tok;
+        }
+        return headers;
+      }
+
+      async function apiFetch(url, options) {
+        const opts = Object.assign({}, options || {});
+        opts.headers = authHeaders(opts.headers);
+        const resp = await fetch(url, opts);
+        const text = await resp.text();
+        let data = null;
+        if (text) {
+          try {
+            data = JSON.parse(text);
+          } catch (_) {
+            data = null;
+          }
+        }
+        if (!resp.ok) {
+          const detail = data && data.error ? data.error : (resp.status + " " + resp.statusText);
+          throw new Error(detail);
+        }
+        return data;
+      }
+
+      function formatNs(ns) {
+        if (!ns) return "-";
+        const d = new Date(Math.floor(ns / 1e6));
+        return Number.isNaN(d.getTime()) ? String(ns) : d.toISOString();
+      }
+
+      function cell(text, cls) {
+        const td = document.createElement("td");
+        if (cls) td.className = cls;
+        td.textContent = text == null || text === "" ? "-" : String(text);
+        return td;
+      }
+
+      function emptyRow(tbody, cols, msg) {
+        tbody.textContent = "";
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = cols;
+        td.className = "empty";
+        td.textContent = msg;
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+
+      function statusBadge(text, kind) {
+        const span = document.createElement("span");
+        span.className = "badge" + (kind ? " " + kind : "");
+        span.textContent = text;
+        return span;
+      }
+
+      async function loadReadyz() {
+        const badge = document.getElementById("ready-badge");
+        const statStatus = document.getElementById("stat-status");
+        const statRuns = document.getElementById("stat-active-runs");
+        const statWorkers = document.getElementById("stat-workers");
+        try {
+          const data = await apiFetch("/readyz");
+          const ready = data && data.status === "ready";
+          badge.className = "badge " + (ready ? "ok" : "err");
+          badge.textContent = ready ? "ready" : (data && data.status ? data.status : "not_ready");
+          statStatus.textContent = badge.textContent;
+          statRuns.textContent = data && typeof data.active_runs === "number" ? String(data.active_runs) : "0";
+          statWorkers.textContent = data && typeof data.workers === "number" ? String(data.workers) : "0";
+        } catch (err) {
+          badge.className = "badge err";
+          badge.textContent = "unreachable";
+          statStatus.textContent = "error";
+          throw err;
+        }
+      }
+
+      async function loadRuns() {
+        const tbody = document.getElementById("runs-body");
+        const count = document.getElementById("runs-count");
+        const data = await apiFetch("/v1/runs");
+        const runs = Array.isArray(data) ? data : (data && Array.isArray(data.runs) ? data.runs : []);
+        count.textContent = String(runs.length);
+        if (runs.length === 0) {
+          emptyRow(tbody, 5, "No workflow runs recorded.");
+          return;
+        }
+        tbody.textContent = "";
+        for (const run of runs) {
+          const tr = document.createElement("tr");
+          tr.appendChild(cell(run.run_id, "mono"));
+          tr.appendChild(cell(run.workflow_name));
+          const stTd = document.createElement("td");
+          const st = String(run.status || "unknown");
+          const kind = st === "SUCCEEDED" || st === "COMPLETED" ? "ok" : (st === "FAILED" || st === "CANCELED" ? "err" : "warn");
+          stTd.appendChild(statusBadge(st, kind));
+          tr.appendChild(stTd);
+          tr.appendChild(cell(run.parent_run_id, "mono"));
+          tr.appendChild(cell(formatNs(run.created_at_ns), "mono"));
+          tbody.appendChild(tr);
+        }
+      }
+
+      async function drainWorker(workerId, btn) {
+        btn.disabled = true;
+        try {
+          await apiFetch("/v1/workers/drain", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ worker_id: workerId })
+          });
+          showBanner("Drain requested for worker " + workerId, "info");
+          await refreshAll();
+        } catch (err) {
+          showBanner("Failed to drain worker " + workerId + ": " + err.message, "error");
+          btn.disabled = false;
+        }
+      }
+
+      async function loadWorkers() {
+        const tbody = document.getElementById("workers-body");
+        const count = document.getElementById("workers-count");
+        const data = await apiFetch("/v1/workers");
+        const workers = data && Array.isArray(data.workers) ? data.workers : [];
+        count.textContent = String(workers.length);
+        if (workers.length === 0) {
+          emptyRow(tbody, 6, "No workers registered.");
+          return;
+        }
+        tbody.textContent = "";
+        for (const w of workers) {
+          const tr = document.createElement("tr");
+          tr.appendChild(cell(w.worker_id, "mono"));
+          tr.appendChild(cell(w.pid, "mono"));
+          tr.appendChild(cell(w.concurrency, "mono"));
+          const stateTd = document.createElement("td");
+          if (w.draining) {
+            stateTd.appendChild(statusBadge("draining", "warn"));
+          } else if (w.alive) {
+            stateTd.appendChild(statusBadge("alive", "ok"));
+          } else {
+            stateTd.appendChild(statusBadge("offline", "err"));
+          }
+          tr.appendChild(stateTd);
+          tr.appendChild(cell(formatNs(w.last_heartbeat_ns), "mono"));
+
+          const actTd = document.createElement("td");
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "danger";
+          btn.textContent = w.draining ? "Draining" : "Drain";
+          btn.disabled = Boolean(w.draining);
+          btn.addEventListener("click", function () { drainWorker(w.worker_id, btn); });
+          actTd.appendChild(btn);
+          tr.appendChild(actTd);
+          tbody.appendChild(tr);
+        }
+      }
+
+      async function requeueDLQ(id, btn) {
+        btn.disabled = true;
+        try {
+          const res = await apiFetch("/v1/dlq/" + encodeURIComponent(id) + "/requeue", {
+            method: "POST"
+          });
+          const runId = res && res.requeued_run_id ? " (new run: " + res.requeued_run_id + ")" : "";
+          showBanner("Requeued dead-letter #" + id + runId, "info");
+          await refreshAll();
+        } catch (err) {
+          showBanner("Failed to requeue DLQ #" + id + ": " + err.message, "error");
+          btn.disabled = false;
+        }
+      }
+
+      async function loadDLQ() {
+        const tbody = document.getElementById("dlq-body");
+        const count = document.getElementById("dlq-count");
+        const statDlq = document.getElementById("stat-dlq");
+        const data = await apiFetch("/v1/dlq");
+        const entries = data && Array.isArray(data.entries) ? data.entries : [];
+        count.textContent = String(entries.length);
+        statDlq.textContent = String(entries.length);
+        if (entries.length === 0) {
+          emptyRow(tbody, 6, "Dead-letter queue is empty.");
+          return;
+        }
+        tbody.textContent = "";
+        for (const e of entries) {
+          const tr = document.createElement("tr");
+          tr.appendChild(cell(e.id, "mono"));
+          tr.appendChild(cell((e.run_id || "-") + " / " + (e.task_id || "-"), "mono"));
+          tr.appendChild(cell(e.workflow_name));
+          tr.appendChild(cell(e.attempt, "mono"));
+          tr.appendChild(cell(e.reason));
+          const actTd = document.createElement("td");
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "primary";
+          btn.textContent = e.requeued ? "Requeued" : "Requeue";
+          btn.disabled = Boolean(e.requeued);
+          btn.addEventListener("click", function () { requeueDLQ(e.id, btn); });
+          actTd.appendChild(btn);
+          tr.appendChild(actTd);
+          tbody.appendChild(tr);
+        }
+      }
+
+      async function refreshAll() {
+        const errors = [];
+        for (const fn of [loadReadyz, loadRuns, loadWorkers, loadDLQ]) {
+          try {
+            await fn();
+          } catch (err) {
+            errors.push(err.message);
+          }
+        }
+        if (errors.length > 0) {
+          showBanner("API error: " + errors[0], "error");
+        }
+      }
+
+      saveTokenBtn.addEventListener("click", function () {
+        const val = tokenInput.value.trim();
+        if (val) {
+          localStorage.setItem(TOKEN_KEY, val);
+          showBanner("Bearer token saved to localStorage.", "info");
+        } else {
+          localStorage.removeItem(TOKEN_KEY);
+          showBanner("Bearer token cleared.", "info");
+        }
+        refreshAll();
+      });
+
+      refreshBtn.addEventListener("click", function () {
+        showBanner("", "info");
+        refreshAll();
+      });
+
+      refreshAll();
+      setInterval(refreshAll, 5000);
+    })();
+  </script>
+</body>
+</html>

@@ -17,6 +17,7 @@ import (
 	"github.com/creova-gif/chronos-sched/internal/engine"
 	"github.com/creova-gif/chronos-sched/internal/metrics"
 	"github.com/creova-gif/chronos-sched/internal/store"
+	"github.com/creova-gif/chronos-sched/internal/ui"
 )
 
 type CoordinatorConfig struct {
@@ -549,6 +550,9 @@ func (c *Coordinator) Handler() http.Handler {
 	})
 	mux.HandleFunc("GET /readyz", c.handleReadyz)
 	mux.Handle("GET /metrics", c.metrics.Handler())
+	uiHandler := ui.Handler()
+	mux.Handle("GET /ui", uiHandler)
+	mux.Handle("GET /ui/", uiHandler)
 	mux.HandleFunc("GET /v1/dlq", c.handleListDeadLetters)
 	mux.HandleFunc("POST /v1/dlq/{id}/requeue", c.handleRequeueDeadLetter)
 	mux.HandleFunc("POST /v1/workflows/run", c.handleSubmitWorkflow)

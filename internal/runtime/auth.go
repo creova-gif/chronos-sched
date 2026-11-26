@@ -17,7 +17,7 @@ func AuthMiddleware(token string, next http.Handler) http.Handler {
 	}
 	expected := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/healthz" {
+		if r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/ui" || r.URL.Path == "/ui/") {
 			next.ServeHTTP(w, r)
 			return
 		}
