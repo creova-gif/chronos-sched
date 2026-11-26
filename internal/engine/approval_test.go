@@ -133,3 +133,132 @@ func TestApprovalGateRejectAndInvalidTransitions(t *testing.T) {
 		t.Fatalf("replayed state mismatch:\nlive:     %+v\nreplayed: %+v", live, replayed)
 	}
 }
+
+func TestApprovalGateFoldAndVerifyReplay(t *testing.T) {
+	t.Parallel()
+
+	const workflowYAML = `
+name: approval-replay-wf
+tasks:
+  - id: build
+    handler: sim
+  - id: deploy-prod
+    handler: sim
+    depends_on: [build]
+`
+	dag, err := engine.ParseDAG([]byte(workflowYAML))
+	if err != nil {
+		t.Fatalf("ParseDAG failed: %v", err)
+	}
+
+	now := time.Unix(1700000200, 0).UTC()
+
+	cases := []struct {
+		name           string
+		runID          string
+		approved       bool
+		comment        string
+		wantFinal      engine.TaskStatus
+		wantLastError  string
+		wantFinalEvent engine.EventType
+	}{
+		{
+			name:           "approved",
+			runID:          "run-approval-fold-approved",
+			approved:       true,
+			comment:        "LGTM",
+			wantFinal:      engine.TaskStatusPending,
+			wantLastError:  "",
+			wantFinalEvent: engine.EventTaskApproved,
+		},
+		{
+			name:           "rejected",
+			runID:          "run-approval-fold-rejected",
+			approved:       false,
+			comment:        "missing rollback plan",
+			wantFinal:      engine.TaskStatusFailed,
+			wantLastError:  "missing rollback plan",
+			wantFinalEvent: engine.EventTaskRejected,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			live := engine.NewRunState(dag, tc.runID)
+			startEvs, _, err := engine.Step(dag, live, engine.CmdStartRun{}, now)
+			if err != nil {
+				t.Fatalf("Step(CmdStartRun) failed: %v", err)
+			}
+			for _, ev := range startEvs {
+				if err := engine.Apply(live, ev); err != nil {
+					t.Fatalf("Apply(%s) failed: %v", ev.Type, err)
+				}
+			}
+
+			reqEv, err := engine.RequestTaskApproval(live, "deploy-prod", "alice", "needs sign-off", now.Add(time.Second))
+			if err != nil {
+				t.Fatalf("RequestTaskApproval failed: %v", err)
+			}
+			resEv, err := engine.ResolveTaskApproval(live, "deploy-prod", "bob", tc.comment, tc.approved, now.Add(2*time.Second))
+			if err != nil {
+				t.Fatalf("ResolveTaskApproval failed: %v", err)
+			}
+			if resEv.Type != tc.wantFinalEvent {
+				t.Fatalf("expected event %s, got %s", tc.wantFinalEvent, resEv.Type)
+			}
+
+			journal := append(append([]engine.Event(nil), startEvs...), reqEv, resEv)
+
+			midState, err := engine.StateAtSeq(dag, journal, reqEv.Seq)
+			if err != nil {
+				t.Fatalf("StateAtSeq(%d) failed: %v", reqEv.Seq, err)
+			}
+			if got := midState.Tasks["deploy-prod"].Status; got != engine.TaskStatusWaitingApproval {
+				t.Fatalf("expected %s at seq %d, got %s", engine.TaskStatusWaitingApproval, reqEv.Seq, got)
+			}
+
+			folded1, err := engine.Fold(dag, journal)
+			if err != nil {
+				t.Fatalf("Fold(1) failed: %v", err)
+			}
+			folded2, err := engine.Fold(dag, journal)
+			if err != nil {
+				t.Fatalf("Fold(2) failed: %v", err)
+			}
+			if !reflect.DeepEqual(folded1, folded2) {
+				t.Fatalf("Fold is not deterministic:\nfirst:  %+v\nsecond: %+v", folded1, folded2)
+			}
+			if !reflect.DeepEqual(live, folded1) {
+				t.Fatalf("folded state mismatch:\nlive:   %+v\nfolded: %+v", live, folded1)
+			}
+			if got := folded1.Tasks["deploy-prod"].Status; got != tc.wantFinal {
+				t.Fatalf("expected %s at final seq, got %s", tc.wantFinal, got)
+			}
+			if got := folded1.Tasks["deploy-prod"].LastError; got != tc.wantLastError {
+				t.Fatalf("expected LastError %q, got %q", tc.wantLastError, got)
+			}
+
+			finalAtSeq, err := engine.StateAtSeq(dag, journal, resEv.Seq)
+			if err != nil {
+				t.Fatalf("StateAtSeq(%d) failed: %v", resEv.Seq, err)
+			}
+			if !reflect.DeepEqual(folded1, finalAtSeq) {
+				t.Fatalf("StateAtSeq(%d) mismatch vs Fold:\nfold: %+v\nseq:  %+v", resEv.Seq, folded1, finalAtSeq)
+			}
+
+			report, err := engine.VerifyReplay(dag, journal)
+			if err != nil {
+				t.Fatalf("VerifyReplay failed: %v", err)
+			}
+			if report.EventsReplayed != len(journal) {
+				t.Fatalf("expected EventsReplayed %d, got %d", len(journal), report.EventsReplayed)
+			}
+			if !reflect.DeepEqual(folded1, report.State) {
+				t.Fatalf("VerifyReplay State mismatch:\nfolded: %+v\nreport: %+v", folded1, report.State)
+			}
+		})
+	}
+}
