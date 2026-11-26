@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -31,6 +33,7 @@ import (
 	"github.com/creova-gif/chronos-sched/internal/store"
 	"github.com/creova-gif/chronos-sched/internal/store/sqlite"
 	"github.com/creova-gif/chronos-sched/internal/tui"
+	"github.com/creova-gif/chronos-sched/pkg/chronos"
 )
 
 //go:embed demo.yaml
@@ -110,6 +113,10 @@ func run(args []string) error {
 		return cmdGC(args[1:])
 	case "dlq":
 		return cmdDLQ(args[1:])
+	case "artifacts":
+		return cmdArtifacts(args[1:])
+	case "approve":
+		return cmdApprove(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
 	case "version":
@@ -149,6 +156,8 @@ Usage:
   chronos schedule <add|list|delete> ... [--db .chronos/chronos.db]
   chronos gc [--older-than 168h] [--dry-run] [--vacuum] [--db .chronos/chronos.db]
   chronos dlq <list|requeue> ... [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
+  chronos artifacts <list|get|put> ... [--coordinator http://127.0.0.1:7420]
+  chronos approve <run_id> <task_id> [--reject] [--actor name] [--comment text] [--coordinator http://127.0.0.1:7420]
   chronos doctor [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
   chronos version
 `)
@@ -1433,6 +1442,152 @@ func rpcPost(url string, reqBody any, respBody any) error {
 	if respBody != nil {
 		return json.NewDecoder(resp.Body).Decode(respBody)
 	}
+	return nil
+}
+
+func cmdArtifacts(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: chronos artifacts <list|get|put> ...")
+	}
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("artifacts list", flag.ContinueOnError)
+		coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+			return fmt.Errorf("usage: chronos artifacts list <run_id> [--coordinator %s]", defaultCoordURL)
+		}
+		runID := strings.TrimSpace(fs.Arg(0))
+		endpoint := fmt.Sprintf("%s/v1/runs/%s/artifacts", strings.TrimRight(*coordURL, "/"), url.PathEscape(runID))
+		var resp runtime.ListArtifactsResponse
+		if err := rpcGet(endpoint, &resp); err != nil {
+			return err
+		}
+		if len(resp.Artifacts) == 0 {
+			fmt.Println("No artifacts.")
+			return nil
+		}
+		for _, a := range resp.Artifacts {
+			fmt.Printf("#%d task=%s name=%s type=%s bytes=%d sha256=%s\n",
+				a.ID, a.TaskID, a.Name, a.ContentType, a.SizeBytes, a.SHA256)
+		}
+		return nil
+	case "get":
+		fs := flag.NewFlagSet("artifacts get", flag.ContinueOnError)
+		coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+		outFile := fs.String("o", "", "output file path (defaults to stdout)")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 3 {
+			return fmt.Errorf("usage: chronos artifacts get <run_id> <task_id> <name> [-o file] [--coordinator %s]", defaultCoordURL)
+		}
+		runID, taskID, name := fs.Arg(0), fs.Arg(1), fs.Arg(2)
+		endpoint := fmt.Sprintf(
+			"%s/v1/runs/%s/tasks/%s/artifacts/%s",
+			strings.TrimRight(*coordURL, "/"),
+			url.PathEscape(runID),
+			url.PathEscape(taskID),
+			url.PathEscape(name),
+		)
+		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode >= 400 {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		}
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		if *outFile != "" {
+			return os.WriteFile(*outFile, data, 0o644)
+		}
+		_, err = os.Stdout.Write(data)
+		return err
+	case "put":
+		fs := flag.NewFlagSet("artifacts put", flag.ContinueOnError)
+		coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+		contentType := fs.String("content-type", "", "optional MIME content type")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 4 {
+			return fmt.Errorf("usage: chronos artifacts put <run_id> <task_id> <name> <file> [--content-type ...] [--coordinator %s]", defaultCoordURL)
+		}
+		runID, taskID, name, filePath := fs.Arg(0), fs.Arg(1), fs.Arg(2), fs.Arg(3)
+		raw, err := os.ReadFile(filePath)
+		if err != nil {
+			return err
+		}
+		endpoint := fmt.Sprintf(
+			"%s/v1/runs/%s/tasks/%s/artifacts",
+			strings.TrimRight(*coordURL, "/"),
+			url.PathEscape(runID),
+			url.PathEscape(taskID),
+		)
+		var rec store.ArtifactRecord
+		if err := rpcPost(endpoint, runtime.PutArtifactRequest{
+			Name:        name,
+			ContentType: *contentType,
+			DataBase64:  base64.StdEncoding.EncodeToString(raw),
+		}, &rec); err != nil {
+			return err
+		}
+		fmt.Printf("Uploaded artifact #%d %s/%s/%s (%d bytes, sha256=%s)\n",
+			rec.ID, rec.RunID, rec.TaskID, rec.Name, rec.SizeBytes, rec.SHA256)
+		return nil
+	default:
+		return fmt.Errorf("unknown artifacts subcommand %q (expected list, get, or put)", args[0])
+	}
+}
+
+func cmdApprove(args []string) error {
+	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
+	reject := fs.Bool("reject", false, "reject the task instead of approving")
+	actor := fs.String("actor", "", "operator name recording the decision")
+	comment := fs.String("comment", "", "optional approval or rejection comment")
+	coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+	if err := parseFlagsAnyOrder(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return fmt.Errorf("usage: chronos approve <run_id> <task_id> [--reject] [--actor name] [--comment text] [--coordinator %s]", defaultCoordURL)
+	}
+	runID, taskID := fs.Arg(0), fs.Arg(1)
+	endpoint := fmt.Sprintf(
+		"%s/v1/runs/%s/tasks/%s/approve",
+		strings.TrimRight(*coordURL, "/"),
+		url.PathEscape(runID),
+		url.PathEscape(taskID),
+	)
+	reqBody := struct {
+		Actor    string `json:"actor,omitempty"`
+		Comment  string `json:"comment,omitempty"`
+		Approved bool   `json:"approved"`
+	}{
+		Actor:    *actor,
+		Comment:  *comment,
+		Approved: !*reject,
+	}
+	var resp chronos.ApprovalResponse
+	if err := rpcPost(endpoint, reqBody, &resp); err != nil {
+		return err
+	}
+	fmt.Printf("Task %s/%s -> %s (seq=%d)\n", resp.RunID, resp.TaskID, resp.TaskStatus, resp.EventSeq)
 	return nil
 }
 
