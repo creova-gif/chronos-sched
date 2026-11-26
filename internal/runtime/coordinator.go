@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -22,6 +24,7 @@ type CoordinatorConfig struct {
 	ReaperTick time.Duration
 	Webhook    *WebhookNotifier
 	AuthToken  string
+	Logger     *slog.Logger
 }
 
 type activeRun struct {
@@ -453,8 +456,34 @@ func (c *Coordinator) commitEventsLocked(ctx context.Context, ar *activeRun, pre
 			c.metrics.IncTasksCompleted()
 		case engine.EventTaskFailed:
 			c.metrics.IncTasksFailed()
+			if dlq, ok := c.store.(store.DLQStore); ok {
+				var p engine.TaskFailedPayload
+				if err := json.Unmarshal(ev.Payload, &p); err == nil && !p.WillRetry {
+					_ = dlq.RecordDeadLetter(ctx, store.DeadLetterEntry{
+						RunID:        ar.state.RunID,
+						TaskID:       ev.TaskID,
+						WorkflowName: ar.state.WorkflowName,
+						Attempt:      ev.Attempt,
+						Reason:       p.Error,
+						FailedAtNs:   ev.TimestampNs,
+					})
+				}
+			}
 		case engine.EventLeaseExpired:
 			c.metrics.IncLeasesExpired()
+			if dlq, ok := c.store.(store.DLQStore); ok {
+				var p engine.LeaseExpiredPayload
+				if err := json.Unmarshal(ev.Payload, &p); err == nil && !p.WillRetry {
+					_ = dlq.RecordDeadLetter(ctx, store.DeadLetterEntry{
+						RunID:        ar.state.RunID,
+						TaskID:       ev.TaskID,
+						WorkflowName: ar.state.WorkflowName,
+						Attempt:      ev.Attempt,
+						Reason:       p.Reason,
+						FailedAtNs:   ev.TimestampNs,
+					})
+				}
+			}
 		case engine.EventTaskOutcomeAmbiguous:
 			c.metrics.IncAmbiguousOutcomes()
 		case engine.EventStaleFencingToken:
@@ -530,7 +559,11 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/tasks/started", c.handleTaskStarted)
 	mux.HandleFunc("POST /v1/tasks/complete", c.handleTaskComplete)
 	mux.HandleFunc("POST /v1/tasks/fail", c.handleTaskFail)
-	return AuthMiddleware(c.cfg.AuthToken, mux)
+	logger := c.cfg.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+	}
+	return ObservabilityMiddleware(logger, AuthMiddleware(c.cfg.AuthToken, mux))
 }
 
 func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Request) {

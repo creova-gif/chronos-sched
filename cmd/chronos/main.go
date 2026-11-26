@@ -111,6 +111,8 @@ func run(args []string) error {
 		return cmdSchedule(args[1:])
 	case "gc":
 		return cmdGC(args[1:])
+	case "dlq":
+		return cmdDLQ(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
 	case "version":
@@ -147,6 +149,7 @@ Usage:
   chronos trace <run_id> [-o trace.json] [--db .chronos/chronos.db]
   chronos schedule <add|list|delete> ... [--db .chronos/chronos.db]
   chronos gc [--older-than 168h] [--dry-run] [--vacuum] [--db .chronos/chronos.db]
+  chronos dlq list [--all] [--db .chronos/chronos.db]
   chronos doctor [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
   chronos version
 `)
@@ -349,6 +352,21 @@ func cmdDemo(args []string) error {
 		},
 		OnReplay: func(runID string) (string, error) {
 			return replayRunFromStore(ctx, st, runID)
+		},
+		OnScrubState: func(runID string, seq int64) (*engine.RunState, error) {
+			rec, err := st.GetRun(ctx, runID)
+			if err != nil {
+				return nil, err
+			}
+			dag, err := engine.ParseDAG([]byte(rec.WorkflowYAML))
+			if err != nil {
+				return nil, err
+			}
+			evs, err := st.LoadRunEvents(ctx, runID)
+			if err != nil {
+				return nil, err
+			}
+			return engine.StateAtSeq(dag, evs, seq)
 		},
 		OnPauseResume: func(runID string, pause bool) (string, error) {
 			action := "resume"
@@ -1358,6 +1376,41 @@ func rpcPost(url string, reqBody any, respBody any) error {
 	}
 	if respBody != nil {
 		return json.NewDecoder(resp.Body).Decode(respBody)
+	}
+	return nil
+}
+
+func cmdDLQ(args []string) error {
+	if len(args) == 0 || args[0] != "list" {
+		return fmt.Errorf("usage: chronos dlq list [--all] [--db %s]", defaultDBPath)
+	}
+	fs := flag.NewFlagSet("dlq list", flag.ContinueOnError)
+	includeAll := fs.Bool("all", false, "include requeued dead-letter entries")
+	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+	if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+		return err
+	}
+	st, err := sqlite.OpenReadOnly(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+
+	entries, err := st.ListDeadLetters(context.Background(), *includeAll)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("No dead-letter entries.")
+		return nil
+	}
+	for _, e := range entries {
+		status := "active"
+		if e.Requeued {
+			status = "requeued:" + e.RequeuedRunID
+		}
+		fmt.Printf("#%d run=%s task=%s workflow=%s attempt=%d status=%s reason=%q\n",
+			e.ID, e.RunID, e.TaskID, e.WorkflowName, e.Attempt, status, e.Reason)
 	}
 	return nil
 }
