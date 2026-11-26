@@ -71,7 +71,7 @@ func StepScrubber(events []engine.Event, cursor int, delta int) int {
 // RenderScrubBanner formats the status banner shown while in time-travel scrub mode.
 func RenderScrubBanner(ev engine.Event, idx, total int) string {
 	_ = idx
-	return fmt.Sprintf("SCRUB MODE: seq %d/%d (%s) — use [<] / [>] or left/right, [s] or [esc] to exit", ev.Seq, total, ev.Type)
+	return fmt.Sprintf("SCRUB MODE: seq %d/%d (%s) — use [<] / [>] or left/right, [s/esc] Exit", ev.Seq, total, ev.Type)
 }
 
 // FindCheckpointIndex returns the index of the CHECKPOINT_SAVED event matching cpNum, or -1.
