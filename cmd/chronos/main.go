@@ -149,7 +149,7 @@ Usage:
   chronos trace <run_id> [-o trace.json] [--db .chronos/chronos.db]
   chronos schedule <add|list|delete> ... [--db .chronos/chronos.db]
   chronos gc [--older-than 168h] [--dry-run] [--vacuum] [--db .chronos/chronos.db]
-  chronos dlq list [--all] [--db .chronos/chronos.db]
+  chronos dlq <list|requeue> ... [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
   chronos doctor [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
   chronos version
 `)
@@ -1381,38 +1381,62 @@ func rpcPost(url string, reqBody any, respBody any) error {
 }
 
 func cmdDLQ(args []string) error {
-	if len(args) == 0 || args[0] != "list" {
-		return fmt.Errorf("usage: chronos dlq list [--all] [--db %s]", defaultDBPath)
+	if len(args) == 0 {
+		return fmt.Errorf("usage: chronos dlq <list|requeue> ... [--db %s] [--coordinator http://127.0.0.1:7420]", defaultDBPath)
 	}
-	fs := flag.NewFlagSet("dlq list", flag.ContinueOnError)
-	includeAll := fs.Bool("all", false, "include requeued dead-letter entries")
-	dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
-	if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
-		return err
-	}
-	st, err := sqlite.OpenReadOnly(*dbPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = st.Close() }()
-
-	entries, err := st.ListDeadLetters(context.Background(), *includeAll)
-	if err != nil {
-		return err
-	}
-	if len(entries) == 0 {
-		fmt.Println("No dead-letter entries.")
-		return nil
-	}
-	for _, e := range entries {
-		status := "active"
-		if e.Requeued {
-			status = "requeued:" + e.RequeuedRunID
+	switch args[0] {
+	case "list":
+		fs := flag.NewFlagSet("dlq list", flag.ContinueOnError)
+		includeAll := fs.Bool("all", false, "include requeued dead-letter entries")
+		dbPath := fs.String("db", defaultDBPath, "SQLite WAL journal path")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
 		}
-		fmt.Printf("#%d run=%s task=%s workflow=%s attempt=%d status=%s reason=%q\n",
-			e.ID, e.RunID, e.TaskID, e.WorkflowName, e.Attempt, status, e.Reason)
+		st, err := sqlite.OpenReadOnly(*dbPath)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = st.Close() }()
+
+		entries, err := st.ListDeadLetters(context.Background(), *includeAll)
+		if err != nil {
+			return err
+		}
+		if len(entries) == 0 {
+			fmt.Println("No dead-letter entries.")
+			return nil
+		}
+		for _, e := range entries {
+			status := "active"
+			if e.Requeued {
+				status = "requeued:" + e.RequeuedRunID
+			}
+			fmt.Printf("#%d run=%s task=%s workflow=%s attempt=%d status=%s reason=%q\n",
+				e.ID, e.RunID, e.TaskID, e.WorkflowName, e.Attempt, status, e.Reason)
+		}
+		return nil
+	case "requeue":
+		fs := flag.NewFlagSet("dlq requeue", flag.ContinueOnError)
+		coordURL := fs.String("coordinator", "http://127.0.0.1:7420", "coordinator base URL")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return fmt.Errorf("usage: chronos dlq requeue <id> [--coordinator http://127.0.0.1:7420]")
+		}
+		id, err := strconv.ParseInt(fs.Arg(0), 10, 64)
+		if err != nil || id <= 0 {
+			return fmt.Errorf("invalid dead-letter id %q", fs.Arg(0))
+		}
+		var resp runtime.RequeueDeadLetterResponse
+		if err := rpcPost(fmt.Sprintf("%s/v1/dlq/%d/requeue", strings.TrimRight(*coordURL, "/"), id), struct{}{}, &resp); err != nil {
+			return err
+		}
+		fmt.Printf("Requeued dead-letter #%d as run %s\n", resp.DeadLetterID, resp.RequeuedRunID)
+		return nil
+	default:
+		return fmt.Errorf("unknown dlq subcommand %q (expected list or requeue)", args[0])
 	}
-	return nil
 }
 
 func rpcGet(url string, respBody any) error {

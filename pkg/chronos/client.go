@@ -81,6 +81,26 @@ type LifecycleResponse struct {
 	Status RunStatus `json:"status"`
 }
 
+// DeadLetterEntry represents a task execution failure that exhausted retries
+// and was routed to the Dead-Letter Queue (DLQ) for inspection or requeueing.
+type DeadLetterEntry struct {
+	ID            int64  `json:"id"`
+	RunID         string `json:"run_id"`
+	TaskID        string `json:"task_id"`
+	WorkflowName  string `json:"workflow_name"`
+	Attempt       int    `json:"attempt"`
+	Reason        string `json:"reason"`
+	FailedAtNs    int64  `json:"failed_at_ns"`
+	Requeued      bool   `json:"requeued"`
+	RequeuedRunID string `json:"requeued_run_id,omitempty"`
+}
+
+// RequeueDeadLetterResponse is returned when a dead-letter entry is requeued into a new run.
+type RequeueDeadLetterResponse struct {
+	DeadLetterID  int64  `json:"dead_letter_id"`
+	RequeuedRunID string `json:"requeued_run_id"`
+}
+
 // WorkerInfo describes a registered worker and its liveness state.
 type WorkerInfo struct {
 	WorkerID      string         `json:"worker_id"`
@@ -270,6 +290,30 @@ func (c *Client) doLifecycle(ctx context.Context, runID, action, reason string) 
 		return LifecycleResponse{}, err
 	}
 	return resp, nil
+}
+
+// ListDeadLetters retrieves dead-letter queue entries from the Coordinator.
+// When includeRequeued is true, already-requeued entries are included via ?all=true.
+func (c *Client) ListDeadLetters(ctx context.Context, includeRequeued bool) ([]DeadLetterEntry, error) {
+	path := "/v1/dlq"
+	if includeRequeued {
+		path += "?all=true"
+	}
+	var resp []DeadLetterEntry
+	if err := c.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// RequeueDeadLetter requeues the dead-letter entry identified by id into a new workflow run.
+func (c *Client) RequeueDeadLetter(ctx context.Context, id int64) (*RequeueDeadLetterResponse, error) {
+	var resp RequeueDeadLetterResponse
+	path := fmt.Sprintf("/v1/dlq/%d/requeue", id)
+	if err := c.doJSON(ctx, http.MethodPost, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respBody any) error {

@@ -60,6 +60,7 @@ chronos inspect-at run_001 --checkpoint 3
 - [ADR-008: Journal Retention & Compaction](docs/adr/008-journal-retention-and-compaction.md)
 - [ADR-009: Webhook Notifications & Retries](docs/adr/009-webhook-notifications-and-retries.md)
 - [ADR-010: Coordinator Bearer Auth](docs/adr/010-coordinator-bearer-auth.md)
+- [ADR-011: Dead-Letter Queue Requeue, Middleware & Readiness Probe](docs/adr/011-dlq-requeue-and-observability.md)
 - [Dead-Letter Queue (`chronos dlq list`), JSON Request Logging (`slog`), W3C `traceparent` & TUI Time-Travel Scrubber (`[s]` in TUI)](CHANGELOG.md)
 - [OpenAPI 3.1 Specification](docs/api/openapi.yaml)
 - [CHANGELOG](CHANGELOG.md)

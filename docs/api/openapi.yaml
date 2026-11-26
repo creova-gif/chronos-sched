@@ -6,12 +6,15 @@ info:
     HTTP/JSON and SSE API for the ChronosSched distributed DAG workflow
     coordinator, supporting workflow submission, run snapshots, live event
     streaming, time-travel timeline forking/merging, run lifecycle controls,
-    and lease-fenced worker coordination.
+    dead-letter queue inspection/requeueing, and lease-fenced worker coordination.
+security:
+  - bearerAuth: []
 paths:
   /healthz:
     get:
       summary: Health check
       operationId: getHealth
+      security: []
       responses:
         "200":
           description: Coordinator is healthy
@@ -19,6 +22,25 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+
+  /readyz:
+    get:
+      summary: Readiness check
+      operationId: getReady
+      security: []
+      responses:
+        "200":
+          description: Coordinator is ready to serve requests
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Coordinator is not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /metrics:
     get:
@@ -518,7 +540,91 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /v1/dlq:
+    get:
+      summary: List dead-letter queue entries
+      operationId: listDeadLetters
+      parameters:
+        - name: all
+          in: query
+          required: false
+          description: Include already-requeued dead-letter entries when true
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: List of dead-letter entries ordered newest-first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeadLetterEntry"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal store error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/dlq/{id}/requeue:
+    post:
+      summary: Requeue a dead-letter entry into a new workflow run
+      operationId: requeueDeadLetter
+      parameters:
+        - $ref: "#/components/parameters/DeadLetterID"
+      responses:
+        "201":
+          description: Dead-letter entry requeued into a new run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RequeueDeadLetterResponse"
+        "400":
+          description: Invalid dead-letter entry ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Dead-letter entry not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Dead-letter entry already requeued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Optional Bearer token authentication enforced by Coordinator AuthMiddleware.
+
   parameters:
     RunID:
       name: id
@@ -527,6 +633,14 @@ components:
       description: Unique identifier of the workflow run
       schema:
         type: string
+    DeadLetterID:
+      name: id
+      in: path
+      required: true
+      description: Numeric identifier of the dead-letter queue entry
+      schema:
+        type: integer
+        format: int64
 
   schemas:
     HealthResponse:
@@ -542,6 +656,41 @@ components:
       required: [error]
       properties:
         error:
+          type: string
+
+    DeadLetterEntry:
+      type: object
+      required: [id, run_id, task_id, workflow_name, attempt, reason, failed_at_ns, requeued]
+      properties:
+        id:
+          type: integer
+          format: int64
+        run_id:
+          type: string
+        task_id:
+          type: string
+        workflow_name:
+          type: string
+        attempt:
+          type: integer
+        reason:
+          type: string
+        failed_at_ns:
+          type: integer
+          format: int64
+        requeued:
+          type: boolean
+        requeued_run_id:
+          type: string
+
+    RequeueDeadLetterResponse:
+      type: object
+      required: [dead_letter_id, requeued_run_id]
+      properties:
+        dead_letter_id:
+          type: integer
+          format: int64
+        requeued_run_id:
           type: string
 
     OkResponse:

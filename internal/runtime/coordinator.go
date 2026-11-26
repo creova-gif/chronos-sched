@@ -543,7 +543,10 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /readyz", c.handleReadyz)
 	mux.Handle("GET /metrics", c.metrics.Handler())
+	mux.HandleFunc("GET /v1/dlq", c.handleListDeadLetters)
+	mux.HandleFunc("POST /v1/dlq/{id}/requeue", c.handleRequeueDeadLetter)
 	mux.HandleFunc("POST /v1/workflows/run", c.handleSubmitWorkflow)
 	mux.HandleFunc("GET /v1/runs", c.handleListRuns)
 	mux.HandleFunc("GET /v1/runs/{id}", c.handleGetRun)
