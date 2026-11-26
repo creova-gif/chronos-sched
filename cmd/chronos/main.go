@@ -160,6 +160,10 @@ Usage:
   chronos approve <run_id> <task_id> [--reject] [--actor name] [--comment text] [--coordinator http://127.0.0.1:7420]
   chronos doctor [--db .chronos/chronos.db] [--coordinator http://127.0.0.1:7420]
   chronos version
+
+Environment:
+  CHRONOS_AUTH_TOKEN   Bearer token for coordinator API authentication
+  CHRONOS_TENANT       Tenant ID sent via X-Chronos-Tenant header
 `)
 }
 
@@ -487,7 +491,12 @@ func cmdServerStart(args []string) error {
 			go runner.Run(runCtx, time.Second)
 		}
 
-		srv := &http.Server{Addr: *addr, Handler: coord.Handler(), ReadHeaderTimeout: 5 * time.Second}
+		srv := &http.Server{
+			Addr:              *addr,
+			Handler:           coord.Handler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			IdleTimeout:       60 * time.Second,
+		}
 		go func() {
 			<-runCtx.Done()
 			shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1419,6 +1428,15 @@ func parseOverrides(raw []string) (map[string]map[string]any, error) {
 	return out, nil
 }
 
+func applyCLIHeaders(req *http.Request) {
+	if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	if tenant := os.Getenv("CHRONOS_TENANT"); tenant != "" {
+		req.Header.Set("X-Chronos-Tenant", tenant)
+	}
+}
+
 func rpcPost(url string, reqBody any, respBody any) error {
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
@@ -1429,9 +1447,7 @@ func rpcPost(url string, reqBody any, respBody any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
+	applyCLIHeaders(req)
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1499,9 +1515,7 @@ func cmdArtifacts(args []string) error {
 		if err != nil {
 			return err
 		}
-		if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
-		}
+		applyCLIHeaders(req)
 		client := &http.Client{Timeout: 5 * time.Second}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -1658,9 +1672,7 @@ func rpcGet(url string, respBody any) error {
 	if err != nil {
 		return err
 	}
-	if tok := os.Getenv("CHRONOS_AUTH_TOKEN"); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
+	applyCLIHeaders(req)
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

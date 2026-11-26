@@ -582,7 +582,17 @@ func (c *Coordinator) Handler() http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
-	return ObservabilityMiddleware(logger, TenantMiddleware(RateLimitMiddleware(c.cfg.RateLimit, AuthMiddleware(c.cfg.AuthToken, mux))))
+	rlCfg := c.cfg.RateLimit
+	if rlCfg.OnLimited == nil {
+		rlCfg.OnLimited = c.metrics.IncRateLimited
+	}
+	return ObservabilityMiddleware(logger, TenantMiddleware(RateLimitMiddleware(rlCfg, AuthMiddleware(c.cfg.AuthToken, mux))))
+}
+
+func (c *Coordinator) assignRunTenant(ctx context.Context, runID string) {
+	if ts, ok := c.store.(store.TenantStore); ok {
+		_ = ts.SetRunTenant(ctx, runID, TenantFromContext(ctx))
+	}
 }
 
 func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Request) {
@@ -597,9 +607,7 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
 	}
-	if ts, ok := c.store.(store.TenantStore); ok {
-		_ = ts.SetRunTenant(r.Context(), resp.RunID, TenantFromContext(r.Context()))
-	}
+	c.assignRunTenant(r.Context(), resp.RunID)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -671,6 +679,9 @@ func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
 	}
+	if !c.authorizeRunTenant(w, r, req.BranchRunID) {
+		return
+	}
 	resp, err := c.MergeRun(r.Context(), baseID, req)
 	if err != nil {
 		status := http.StatusBadRequest
@@ -682,6 +693,7 @@ func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, ErrorResponse{Error: err.Error()})
 		return
 	}
+	c.assignRunTenant(r.Context(), resp.RunID)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -749,6 +761,7 @@ func (c *Coordinator) handleForkRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, ErrorResponse{Error: err.Error()})
 		return
 	}
+	c.assignRunTenant(r.Context(), resp.RunID)
 	writeJSON(w, http.StatusCreated, resp)
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -15,9 +16,13 @@ func TestRateLimitMiddleware_BurstIsolationAndExemptions(t *testing.T) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 
+	var limitedCount atomic.Int64
 	handler := TenantMiddleware(RateLimitMiddleware(RateLimitConfig{
 		RequestsPerSecond: 0.001, // negligible refill during test
 		Burst:             2,
+		OnLimited: func() {
+			limitedCount.Add(1)
+		},
 	}, okHandler))
 
 	doReq := func(method, path, tenant string) *httptest.ResponseRecorder {
@@ -49,10 +54,16 @@ func TestRateLimitMiddleware_BurstIsolationAndExemptions(t *testing.T) {
 	if got := rec2.Header().Get("X-RateLimit-Remaining"); got != "0" {
 		t.Fatalf("alpha req 2: expected X-RateLimit-Remaining=0, got %q", got)
 	}
+	if got := limitedCount.Load(); got != 0 {
+		t.Fatalf("after allowed requests: expected OnLimited count 0, got %d", got)
+	}
 
 	rec3 := doReq(http.MethodPost, "/v1/runs", "alpha")
 	if rec3.Code != http.StatusTooManyRequests {
 		t.Fatalf("alpha req 3: expected 429, got %d", rec3.Code)
+	}
+	if got := limitedCount.Load(); got != 1 {
+		t.Fatalf("after 429 rejection: expected OnLimited count 1, got %d", got)
 	}
 	if got := rec3.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("alpha req 3: expected Retry-After=1, got %q", got)
@@ -86,6 +97,9 @@ func TestRateLimitMiddleware_BurstIsolationAndExemptions(t *testing.T) {
 		if exemptRec.Code != http.StatusOK {
 			t.Fatalf("GET %s for exhausted alpha: expected 200, got %d", path, exemptRec.Code)
 		}
+	}
+	if got := limitedCount.Load(); got != 1 {
+		t.Fatalf("after beta allowed and exempt requests: expected OnLimited count 1, got %d", got)
 	}
 
 	// Concurrent requests under -race.
