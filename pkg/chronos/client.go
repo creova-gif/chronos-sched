@@ -223,12 +223,21 @@ func (c *Client) Health(ctx context.Context) error {
 
 // SubmitWorkflow submits a workflow YAML definition to start a new run.
 func (c *Client) SubmitWorkflow(ctx context.Context, runID, workflowYAML string) (SubmitResponse, error) {
+	return c.SubmitWorkflowIdempotent(ctx, runID, workflowYAML, "")
+}
+
+// SubmitWorkflowIdempotent submits a workflow YAML definition with an optional Idempotency-Key header.
+func (c *Client) SubmitWorkflowIdempotent(ctx context.Context, runID, workflowYAML, idempotencyKey string) (SubmitResponse, error) {
 	req := submitWorkflowRequest{
 		RunID:        runID,
 		WorkflowYAML: workflowYAML,
 	}
+	var headers map[string]string
+	if idempotencyKey != "" {
+		headers = map[string]string{"Idempotency-Key": idempotencyKey}
+	}
 	var resp SubmitResponse
-	if err := c.doJSON(ctx, http.MethodPost, "/v1/workflows/run", req, &resp); err != nil {
+	if err := c.doJSONWithHeaders(ctx, http.MethodPost, "/v1/workflows/run", headers, req, &resp); err != nil {
 		return SubmitResponse{}, err
 	}
 	return resp, nil
@@ -379,6 +388,10 @@ func (c *Client) applyHeaders(req *http.Request) {
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respBody any) error {
+	return c.doJSONWithHeaders(ctx, method, path, nil, reqBody, respBody)
+}
+
+func (c *Client) doJSONWithHeaders(ctx context.Context, method, path string, headers map[string]string, reqBody, respBody any) error {
 	var bodyReader io.Reader
 	if reqBody != nil {
 		raw, err := json.Marshal(reqBody)
@@ -397,6 +410,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 	}
 	req.Header.Set("Accept", "application/json")
 	c.applyHeaders(req)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -17,4 +17,5 @@ type IdempotencyRecord struct {
 type IdempotencyStore interface {
 	GetIdempotencyKey(ctx context.Context, tenantID, key string) (IdempotencyRecord, bool, error)
 	PutIdempotencyKey(ctx context.Context, rec IdempotencyRecord) error
+	PruneIdempotencyKeys(ctx context.Context, cutoffNs int64) (int64, error)
 }
