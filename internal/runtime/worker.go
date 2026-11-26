@@ -222,7 +222,7 @@ func (w *Worker) executeLease(parentCtx context.Context, lease *LeasedTask) {
 		return
 	}
 
-	output, err := handler(taskCtx, lease.Input)
+	output, err := invokeHandlerSafe(taskCtx, handler, lease.Input)
 	if err != nil {
 		if parentCtx.Err() != nil {
 			return
@@ -369,4 +369,14 @@ func builtinHTTPHandler(ctx context.Context, input map[string]any) (map[string]a
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	return map[string]any{"status_code": resp.StatusCode, "body": string(body)}, nil
+}
+
+func invokeHandlerSafe(ctx context.Context, fn HandlerFunc, input map[string]any) (output map[string]any, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			output = nil
+			err = fmt.Errorf("handler panic: %v", rec)
+		}
+	}()
+	return fn(ctx, input)
 }

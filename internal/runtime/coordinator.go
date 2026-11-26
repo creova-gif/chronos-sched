@@ -21,12 +21,13 @@ import (
 )
 
 type CoordinatorConfig struct {
-	LeaseTTL   time.Duration
-	ReaperTick time.Duration
-	Webhook    *WebhookNotifier
-	AuthToken  string
-	Logger     *slog.Logger
-	RateLimit  RateLimitConfig
+	LeaseTTL               time.Duration
+	ReaperTick             time.Duration
+	Webhook                *WebhookNotifier
+	AuthToken              string
+	Logger                 *slog.Logger
+	RateLimit              RateLimitConfig
+	MaxActiveRunsPerTenant int
 }
 
 type activeRun struct {
@@ -602,6 +603,15 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
 	}
+	if err := c.checkTenantRunQuota(r.Context()); err != nil {
+		if errors.Is(err, ErrTenantQuotaExceeded) {
+			c.metrics.IncRateLimited()
+			writeJSON(w, http.StatusTooManyRequests, ErrorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+		return
+	}
 	resp, err := c.SubmitWorkflow(r.Context(), req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
@@ -750,6 +760,15 @@ func (c *Coordinator) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	var req ForkRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+		return
+	}
+	if err := c.checkTenantRunQuota(r.Context()); err != nil {
+		if errors.Is(err, ErrTenantQuotaExceeded) {
+			c.metrics.IncRateLimited()
+			writeJSON(w, http.StatusTooManyRequests, ErrorResponse{Error: err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
 	resp, err := c.ForkRun(r.Context(), parentID, req)

@@ -117,6 +117,24 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+    .toggle-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+      padding: 0.35rem 0.6rem;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+    }
+    .toggle-control input[type="checkbox"] {
+      margin: 0;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
     main {
       max-width: 1280px;
       margin: 0 auto;
@@ -247,6 +265,7 @@
       <input id="tenant-id" type="text" placeholder="Tenant ID (optional)" aria-label="Tenant ID">
       <input id="auth-token" type="password" placeholder="Bearer token (optional)" aria-label="Bearer token">
       <button id="save-token" type="button">Save Auth</button>
+      <label class="toggle-control"><input id="auto-refresh" type="checkbox" checked> Auto-refresh (3s)</label>
       <button id="refresh-btn" class="primary" type="button">Refresh</button>
     </div>
   </header>
@@ -395,6 +414,7 @@
       const tenantInput = document.getElementById("tenant-id");
       const tokenInput = document.getElementById("auth-token");
       const saveTokenBtn = document.getElementById("save-token");
+      const autoRefreshCheckbox = document.getElementById("auto-refresh");
       const refreshBtn = document.getElementById("refresh-btn");
       const banner = document.getElementById("banner");
       const runsDatalist = document.getElementById("runs-datalist");
@@ -759,13 +779,35 @@
       approveBtn.addEventListener("click", function () { resolveApproval(true); });
       rejectBtn.addEventListener("click", function () { resolveApproval(false); });
 
+      const AUTO_REFRESH_MS = 3000;
+      let autoRefreshTimer = null;
+
+      function syncAutoRefresh() {
+        if (autoRefreshTimer !== null) {
+          clearInterval(autoRefreshTimer);
+          autoRefreshTimer = null;
+        }
+        if (autoRefreshCheckbox && autoRefreshCheckbox.checked) {
+          autoRefreshTimer = setInterval(refreshAll, AUTO_REFRESH_MS);
+        }
+      }
+
+      if (autoRefreshCheckbox) {
+        autoRefreshCheckbox.addEventListener("change", function () {
+          if (autoRefreshCheckbox.checked) {
+            refreshAll();
+          }
+          syncAutoRefresh();
+        });
+      }
+
       refreshBtn.addEventListener("click", function () {
         showBanner("", "info");
         refreshAll();
       });
 
       refreshAll();
-      setInterval(refreshAll, 5000);
+      syncAutoRefresh();
     })();
   </script>
 </body>
