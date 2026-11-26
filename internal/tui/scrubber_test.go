@@ -186,4 +186,9 @@ func TestScrubSessionHelpers(t *testing.T) {
 	if st.Tasks["load"].Status != engine.TaskStatusPending {
 		t.Fatalf("expected load pending at seq 2, got %s", st.Tasks["load"].Status)
 	}
+
+	banner := tui.RenderScrubBanner(events[0], 0, len(events))
+	if !strings.Contains(banner, "Exit") || !strings.Contains(banner, "esc") {
+		t.Fatalf("expected RenderScrubBanner to include Exit and esc hint, got %q", banner)
+	}
 }

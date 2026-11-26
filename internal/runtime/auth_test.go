@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -189,6 +191,52 @@ func TestAuthWorkerEndToEnd(t *testing.T) {
 	case <-workerDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for worker to stop")
+	}
+}
+
+func TestAuthMiddlewareWithAuditLogsDenied(t *testing.T) {
+	const secretToken = "super-secret-expected-token"
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+
+	nextCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := runtime.AuthMiddlewareWithAudit(secretToken, logger, next)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflows/run", nil)
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
+	}
+	if nextCalled {
+		t.Fatal("expected next handler not to be called on unauthorized request")
+	}
+
+	raw := buf.String()
+	if strings.Contains(raw, secretToken) {
+		t.Fatalf("audit log leaked expected token: %s", raw)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &entry); err != nil {
+		t.Fatalf("json.Unmarshal audit log: %v (raw=%q)", err, raw)
+	}
+	if audit, ok := entry["audit"].(bool); !ok || !audit {
+		t.Fatalf("expected audit=true, got %#v", entry["audit"])
+	}
+	if entry["action"] != "auth_bearer" {
+		t.Fatalf("expected action=%q, got %#v", "auth_bearer", entry["action"])
+	}
+	if entry["outcome"] != "denied" {
+		t.Fatalf("expected outcome=%q, got %#v", "denied", entry["outcome"])
 	}
 }
 
