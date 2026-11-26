@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // RunRecord describes durable lineage and workflow metadata for a workflow run.
@@ -45,4 +46,47 @@ func (c *Client) ListRuns(ctx context.Context, opts ListRunsOptions) ([]RunRecor
 		return nil, err
 	}
 	return runs, nil
+}
+
+func isTerminalRunStatus(status RunStatus) bool {
+	switch status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+// WaitForRun polls GetRun until the run reaches a terminal status (COMPLETED, FAILED, or CANCELLED)
+// or the context is cancelled. If pollInterval <= 0, it defaults to 250ms.
+func (c *Client) WaitForRun(ctx context.Context, runID string, pollInterval time.Duration) (RunSnapshot, error) {
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+
+	snap, err := c.GetRun(ctx, runID)
+	if err != nil {
+		return RunSnapshot{}, err
+	}
+	if snap.State != nil && isTerminalRunStatus(snap.State.Status) {
+		return snap, nil
+	}
+
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return RunSnapshot{}, ctx.Err()
+		case <-ticker.C:
+			snap, err := c.GetRun(ctx, runID)
+			if err != nil {
+				return RunSnapshot{}, err
+			}
+			if snap.State != nil && isTerminalRunStatus(snap.State.Status) {
+				return snap, nil
+			}
+		}
+	}
 }

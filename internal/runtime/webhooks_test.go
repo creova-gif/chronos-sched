@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -211,6 +212,136 @@ func TestWebhookNewNotifierInvalidURL(t *testing.T) {
 	for _, raw := range cases {
 		if _, err := NewWebhookNotifier(WebhookConfig{URL: raw}); err == nil {
 			t.Errorf("expected error for invalid URL %q, got nil", raw)
+		}
+	}
+}
+
+func TestWebhookBlocksRedirectsByDefault(t *testing.T) {
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+
+	var redirectHits atomic.Int32
+	redirectHitCh := make(chan struct{}, 1)
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectHits.Add(1)
+		http.Redirect(w, r, target.URL, http.StatusFound)
+		select {
+		case redirectHitCh <- struct{}{}:
+		default:
+		}
+	}))
+	defer redirector.Close()
+
+	notifier, err := NewWebhookNotifier(WebhookConfig{
+		URL:         redirector.URL,
+		Timeout:     2 * time.Second,
+		MaxAttempts: 2,
+		BaseBackoff: 5 * time.Millisecond,
+		QueueSize:   4,
+	})
+	if err != nil {
+		t.Fatalf("NewWebhookNotifier: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		notifier.Start(ctx)
+	}()
+
+	notifier.Notify(WebhookPayload{
+		Event: "RUN_COMPLETED",
+		RunID: "run-redirect",
+	})
+
+	select {
+	case <-redirectHitCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for redirector request")
+	}
+
+	// Give any potential redirect or retry a brief window to settle.
+	time.Sleep(50 * time.Millisecond)
+
+	if got := targetHits.Load(); got != 0 {
+		t.Fatalf("expected redirect target to never be hit, got %d hits", got)
+	}
+	if got := redirectHits.Load(); got != 1 {
+		t.Fatalf("expected 1 hit on redirector, got %d", got)
+	}
+
+	cancel()
+	<-done
+}
+
+func TestWebhookBlockPrivateIPsRejectsLiteralAndLocalhost(t *testing.T) {
+	cases := []string{
+		"http://127.0.0.1:8080/hook",
+		"http://169.254.169.254/latest/meta-data/",
+		"http://10.0.0.1/hook",
+		"http://[::1]:8080/hook",
+		"http://localhost:8080/hook",
+	}
+
+	for _, raw := range cases {
+		if _, err := NewWebhookNotifier(WebhookConfig{
+			URL:             raw,
+			BlockPrivateIPs: true,
+		}); err == nil {
+			t.Errorf("expected error for blocked webhook URL %q, got nil", raw)
+		}
+	}
+}
+
+func TestIsBlockedWebhookIP(t *testing.T) {
+	cases := []struct {
+		ip      string
+		blocked bool
+	}{
+		// Public IPs
+		{ip: "93.184.216.34", blocked: false},
+		{ip: "8.8.8.8", blocked: false},
+		{ip: "2606:4700:4700::1111", blocked: false},
+
+		// Loopback
+		{ip: "127.0.0.1", blocked: true},
+		{ip: "::1", blocked: true},
+
+		// Link-local / cloud metadata
+		{ip: "169.254.169.254", blocked: true},
+		{ip: "fe80::1", blocked: true},
+
+		// RFC1918 private & ULA
+		{ip: "10.0.0.1", blocked: true},
+		{ip: "172.16.0.1", blocked: true},
+		{ip: "192.168.1.1", blocked: true},
+		{ip: "fc00::1", blocked: true},
+		{ip: "fd12:3456:789a::1", blocked: true},
+
+		// Unspecified & multicast
+		{ip: "0.0.0.0", blocked: true},
+		{ip: "::", blocked: true},
+		{ip: "224.0.0.1", blocked: true},
+
+		// IPv4-mapped IPv6
+		{ip: "::ffff:127.0.0.1", blocked: true},
+		{ip: "::ffff:169.254.169.254", blocked: true},
+		{ip: "::ffff:93.184.216.34", blocked: false},
+	}
+
+	for _, tc := range cases {
+		parsed := net.ParseIP(tc.ip)
+		if parsed == nil {
+			t.Fatalf("failed to parse IP %q", tc.ip)
+		}
+		if got := isBlockedWebhookIP(parsed); got != tc.blocked {
+			t.Errorf("isBlockedWebhookIP(%q) = %v, want %v", tc.ip, got, tc.blocked)
 		}
 	}
 }
