@@ -1,0 +1,26 @@
+services:
+  coordinator:
+    build: .
+    ports:
+      - "7420:7420"
+    volumes:
+      - chronos_data:/data
+    command: ["server", "start", "--addr", "0.0.0.0:7420", "--db", "/data/chronos.db"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7420/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  worker:
+    build: .
+    deploy:
+      replicas: 2
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    command: ["worker", "start", "--coordinator", "http://coordinator:7420", "--concurrency", "4"]
+
+volumes:
+  chronos_data:
