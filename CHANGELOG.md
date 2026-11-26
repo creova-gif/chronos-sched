@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workflow Submission Idempotency (ADR-015):** Per-tenant `Idempotency-Key` deduplication on `POST /v1/workflows/run` backed by `IdempotencyStore` (`200` replay, `409` workflow conflict), `Client.SubmitWorkflowIdempotent`, `chronos workflow run --idempotency-key`, and `IdempotencyStore.PruneIdempotencyKeys`.
 - **Worker Poll Jitter:** Added jitter to worker polling intervals to reduce coordinator thundering-herd contention.
 - **Architecture Decision Records:** Added `ADR-014` (`docs/adr/014-rate-limiting-and-tenant-enforcement.md`) and `ADR-015` (`docs/adr/015-idempotency-and-enterprise-hardening.md`).
+- **Structured JSON Server Logging:** Added structured JSON `slog` server logging (`--log-level`) wired into `chronos server start`.
+- **Idempotency Key Garbage Collection:** Added `chronos gc` pruning of expired `idempotency_keys` (`pruned_idempotency_keys`).
+- **WCAG 2.1 AA Web Console Accessibility:** Added `skip-link`, `<main>` landmark, `:focus-visible` outlines, and `aria-live="polite"` status announcements to the embedded Web Console.
+- **Runtime Performance Benchmarks:** Added runtime middleware and `/readyz` benchmarks (`internal/runtime/bench_test.go`).
 
 ## [0.2.0] - 2026-11-26
 

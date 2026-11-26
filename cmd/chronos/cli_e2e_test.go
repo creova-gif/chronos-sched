@@ -275,10 +275,14 @@ tasks:
 		t.Fatalf("unexpected schedule delete output: %s", schedDel)
 	}
 
-	// 8. Lineage-safe GC dry-run.
+	// 8. Lineage-safe GC dry-run & idempotency pruning.
 	gcOut := runCLI("gc", "--older-than", "0s", "--dry-run", "--db", dbPath)
-	if !strings.Contains(gcOut, "GC dry_run=true") || !strings.Contains(gcOut, "deleted_runs=0") {
+	if !strings.Contains(gcOut, "GC dry_run=true") || !strings.Contains(gcOut, "deleted_runs=0") || !strings.Contains(gcOut, "pruned_idempotency_keys=") {
 		t.Fatalf("unexpected gc dry-run output: %s", gcOut)
+	}
+	gcRealOut := runCLI("gc", "--older-than", "24h", "--db", dbPath)
+	if !strings.Contains(gcRealOut, "GC dry_run=false") || !strings.Contains(gcRealOut, "pruned_idempotency_keys=") {
+		t.Fatalf("unexpected gc output: %s", gcRealOut)
 	}
 
 	// 9. chronos version & chronos doctor.
