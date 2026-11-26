@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Run Listing Pagination & Filtering:** Added `?status` (comma-separated `RUNNING|PAUSED|COMPLETED|FAILED|CANCELLED`) and `?limit` (default `100`, `1..500`) query parameters to `GET /v1/runs` with `400` validation errors.
+- **Doctor Diagnostics & Posture Checks:** Added `Ping` connectivity and `auth_token` security posture checks to `chronos doctor`.
 - **CLI Runs Command:** Added `chronos runs [--status RUNNING|COMPLETED|FAILED] [--coordinator ...]` to list and filter coordinator runs.
 - **O(1) Readiness Probe:** Added `HealthChecker.Ping` for lightweight, constant-time `/readyz` readiness checks.
 - **Uniform Request Body Guardrails:** Standardized `decodeJSONBody` with a 2 MiB maximum body size across Coordinator HTTP handlers.
