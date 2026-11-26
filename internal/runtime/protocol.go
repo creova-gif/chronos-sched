@@ -15,6 +15,17 @@ type WorkerInfo struct {
 	Resources     map[string]int `json:"resources,omitempty"`
 	LastHeartbeat int64          `json:"last_heartbeat_ns"`
 	Alive         bool           `json:"alive"`
+	Draining      bool           `json:"draining,omitempty"`
+}
+
+type WorkerDrainRequest struct {
+	WorkerID string `json:"worker_id"`
+}
+
+type WorkerDrainResponse struct {
+	WorkerID      string `json:"worker_id"`
+	Draining      bool   `json:"draining"`
+	InFlightTasks int    `json:"in_flight_tasks"`
 }
 
 type SubmitWorkflowRequest struct {

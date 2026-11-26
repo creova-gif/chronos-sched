@@ -559,6 +559,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/workers/register", c.handleWorkerRegister)
 	mux.HandleFunc("POST /v1/workers/poll", c.handleWorkerPoll)
 	mux.HandleFunc("POST /v1/workers/heartbeat", c.handleWorkerHeartbeat)
+	mux.HandleFunc("POST /v1/workers/drain", c.handleWorkerDrain)
 	mux.HandleFunc("POST /v1/tasks/started", c.handleTaskStarted)
 	mux.HandleFunc("POST /v1/tasks/complete", c.handleTaskComplete)
 	mux.HandleFunc("POST /v1/tasks/fail", c.handleTaskFail)
@@ -804,6 +805,10 @@ func (c *Coordinator) handleWorkerPoll(w http.ResponseWriter, r *http.Request) {
 	if wi, ok := c.workers[req.WorkerID]; ok {
 		wi.LastHeartbeat = now.UnixNano()
 		wi.Alive = true
+		if wi.Draining {
+			writeJSON(w, http.StatusOK, LeasePollResponse{})
+			return
+		}
 		if len(req.Resources) > 0 {
 			wi.Resources = cloneResources(req.Resources)
 		}

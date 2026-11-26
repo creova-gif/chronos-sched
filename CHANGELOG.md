@@ -8,7 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- High-concurrency chaos test (`TestChaosConcurrentWorkersKillAndLiveFork`) exercising a 30-task layered DAG across 4 concurrent workers with abrupt 50% worker fleet loss, concurrent live timeline forking from checkpoint 3 during recovery, and full offline `VerifyReplay` and `DiffRuns` validation.
+- **Timeline Merge Execution (ADR-003):** Execute deterministic branch merges (`chronos merge --apply`, `POST /v1/runs/{id}/merge`) in addition to dry-run merge planning.
+- **Coordinator HA Leader Election (ADR-004):** Active-standby Coordinator leader lease election (`--ha-id`, `--ha-ttl`).
+- **Prometheus Metrics & Instrumentation (ADR-005):** `/metrics` Prometheus exposition endpoint and runtime instrumentation.
+- **Deterministic Cron Schedules (ADR-006):** Cron schedule management via `chronos schedule add|list|delete`.
+- **Workflow Lifecycle Control:** Pause, resume, and cancel controls across Coordinator API, CLI, and TUI.
+- **Flight-Recorder Bundles & Trace Export (ADR-007):** Portable run export/import bundles and Perfetto/Chrome Trace output (`chronos export|import|trace`).
+- **Lineage-Safe Journal Retention & Compaction (ADR-008):** `chronos gc` retention pruning and compaction preserving active fork lineage.
+- **Webhook Notifications (ADR-009):** Outbound webhook delivery with HMAC-SHA256 payload signing (`--webhook-url`, `--webhook-secret`) and retry backoff.
+- **Coordinator & Worker Bearer Token Auth (ADR-010):** Optional constant-time Bearer token authentication (`--auth-token`, `CHRONOS_AUTH_TOKEN`).
+- **Secrets Redaction:** `--redact` flag in `chronos history` and `chronos export` to scrub sensitive keys from event payloads.
+- **Diagnostics & Versioning:** `chronos doctor` environment/journal health checks and `chronos version` build metadata command.
+- **Public Go Client SDK (`pkg/chronos`):** SSE `StreamRunEvents`, Bearer token authentication, and Dead-Letter Queue methods.
+- **Interactive TUI Enhancements:** Run/task filters, workflow lifecycle controls, and Time-Travel Scrubber (`[s]` toggle, `left`/`[` & `right`/`]`).
+- **Dead-Letter Queue (ADR-011):** `dead_letters` SQLite table, `chronos dlq list|requeue`, `GET /v1/dlq`, and `POST /v1/dlq/{id}/requeue`.
+- **HTTP Observability & Readiness (ADR-011):** Structured JSON `slog` request logging, W3C `Traceparent` / `X-Request-Id` propagation, panic recovery (`ObservabilityMiddleware`), and `/readyz` readiness probe.
+- **OpenAPI 3.1 Specification:** Updated `docs/api/openapi.yaml` covering merge, lifecycle, DLQ, and readiness endpoints.
+- **High-Concurrency Chaos Test:** `TestChaosConcurrentWorkersKillAndLiveFork` exercising a 30-task layered DAG across 4 concurrent workers with abrupt 50% worker fleet loss, concurrent live timeline forking from checkpoint 3 during recovery, and full offline `VerifyReplay` and `DiffRuns` validation.
 
 ## [0.1.0] - 2026-11-25
 
