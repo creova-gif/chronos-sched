@@ -26,6 +26,7 @@ type CoordinatorConfig struct {
 	Webhook    *WebhookNotifier
 	AuthToken  string
 	Logger     *slog.Logger
+	RateLimit  RateLimitConfig
 }
 
 type activeRun struct {
@@ -581,10 +582,11 @@ func (c *Coordinator) Handler() http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
-	return ObservabilityMiddleware(logger, TenantMiddleware(AuthMiddleware(c.cfg.AuthToken, mux)))
+	return ObservabilityMiddleware(logger, TenantMiddleware(RateLimitMiddleware(c.cfg.RateLimit, AuthMiddleware(c.cfg.AuthToken, mux))))
 }
 
 func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req SubmitWorkflowRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
@@ -594,6 +596,9 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
 		return
+	}
+	if ts, ok := c.store.(store.TenantStore); ok {
+		_ = ts.SetRunTenant(r.Context(), resp.RunID, TenantFromContext(r.Context()))
 	}
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -680,11 +685,36 @@ func (c *Coordinator) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
+	if ts, ok := c.store.(store.TenantStore); ok {
+		allowedIDs, err := ts.ListRunIDsByTenant(r.Context(), TenantFromContext(r.Context()))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
+		allowed := make(map[string]struct{}, len(allowedIDs))
+		for _, id := range allowedIDs {
+			allowed[id] = struct{}{}
+		}
+		filtered := make([]store.RunRecord, 0, len(allowedIDs))
+		for _, run := range runs {
+			if _, ok := allowed[run.RunID]; ok {
+				filtered = append(filtered, run)
+			}
+		}
+		runs = filtered
+	}
 	writeJSON(w, http.StatusOK, runs)
 }
 
 func (c *Coordinator) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
+	if ts, ok := c.store.(store.TenantStore); ok {
+		owner, err := ts.GetRunTenant(r.Context(), runID)
+		if err == nil && owner != TenantFromContext(r.Context()) {
+			writeJSON(w, http.StatusNotFound, ErrorResponse{Error: store.ErrRunNotFound.Error()})
+			return
+		}
+	}
 	snap, err := c.Snapshot(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, store.ErrRunNotFound) {
@@ -699,6 +729,7 @@ func (c *Coordinator) handleGetRun(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	parentID := r.PathValue("id")
+	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req ForkRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})

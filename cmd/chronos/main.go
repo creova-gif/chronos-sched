@@ -136,7 +136,7 @@ func printUsage() {
 Usage:
   chronos init [--dir .chronos]
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
-  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec]
+  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec] [--rate-limit-rps N] [--rate-limit-burst N]
   chronos worker start [--coordinator http://127.0.0.1:7420] [--auth-token tok] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos worker list [--coordinator http://127.0.0.1:7420]
   chronos worker drain <worker_id> [--coordinator http://127.0.0.1:7420]
@@ -431,6 +431,8 @@ func cmdServerStart(args []string) error {
 	authToken := fs.String("auth-token", os.Getenv("CHRONOS_AUTH_TOKEN"), "optional Bearer token for Coordinator API auth")
 	webhookURL := fs.String("webhook-url", "", "optional webhook URL for terminal run notifications")
 	webhookSecret := fs.String("webhook-secret", "", "optional HMAC-SHA256 secret for webhook signing")
+	rateRPS := fs.Float64("rate-limit-rps", 0, "optional per-tenant API rate limit in requests/sec (0 = disabled)")
+	rateBurst := fs.Int("rate-limit-burst", 0, "optional per-tenant API rate limit burst capacity")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -466,6 +468,7 @@ func cmdServerStart(args []string) error {
 			ReaperTick: engine.DefaultReaperTick,
 			AuthToken:  *authToken,
 			Webhook:    notifier,
+			RateLimit:  runtime.RateLimitConfig{RequestsPerSecond: *rateRPS, Burst: *rateBurst},
 		})
 		if err := coord.Recover(runCtx); err != nil {
 			return fmt.Errorf("recover coordinator state: %w", err)
