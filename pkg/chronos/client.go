@@ -190,6 +190,7 @@ type errorResponse struct {
 type Client struct {
 	baseURL    string
 	authToken  string
+	tenantID   string
 	httpClient *http.Client
 }
 
@@ -206,6 +207,12 @@ func NewClient(baseURL string) *Client {
 // WithBearerToken configures a Bearer token for Authorization headers on API requests.
 func (c *Client) WithBearerToken(token string) *Client {
 	c.authToken = token
+	return c
+}
+
+// WithTenant configures a tenant identifier for X-Chronos-Tenant headers on API requests.
+func (c *Client) WithTenant(tenant string) *Client {
+	c.tenantID = tenant
 	return c
 }
 
@@ -382,6 +389,9 @@ func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respB
 	req.Header.Set("Accept", "application/json")
 	if c.authToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
+	if c.tenantID != "" {
+		req.Header.Set("X-Chronos-Tenant", c.tenantID)
 	}
 
 	resp, err := c.httpClient.Do(req)

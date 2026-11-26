@@ -349,6 +349,108 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /v1/runs/{id}/tasks/{task_id}/request-approval:
+    post:
+      summary: Request human approval for a task
+      operationId: requestTaskApproval
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "200":
+          description: Task transitioned to WAITING_APPROVAL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid task state transition or task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/tasks/{task_id}/approve:
+    post:
+      summary: Approve or reject a task waiting for approval
+      operationId: resolveTaskApproval
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalRequest"
+      responses:
+        "200":
+          description: Approval decision applied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApprovalResponse"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Invalid task state transition or task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /v1/runs/{id}/artifacts:
     get:
       summary: List artifacts for a workflow run
@@ -840,6 +942,13 @@ components:
       schema:
         type: integer
         format: int64
+    TenantHeader:
+      name: X-Chronos-Tenant
+      in: header
+      required: false
+      description: Optional tenant identifier for multi-tenant request scoping
+      schema:
+        type: string
 
   schemas:
     HealthResponse:
@@ -1451,3 +1560,30 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ArtifactRecord"
+
+    ApprovalRequest:
+      type: object
+      properties:
+        actor:
+          type: string
+          description: Identifier of the user or system requesting or resolving approval
+        comment:
+          type: string
+          description: Optional justification or review note
+        approved:
+          type: boolean
+          description: Whether the task is approved (true) or rejected (false)
+
+    ApprovalResponse:
+      type: object
+      required: [run_id, task_id, task_status, event_seq]
+      properties:
+        run_id:
+          type: string
+        task_id:
+          type: string
+        task_status:
+          $ref: "#/components/schemas/TaskStatus"
+        event_seq:
+          type: integer
+          format: int64
