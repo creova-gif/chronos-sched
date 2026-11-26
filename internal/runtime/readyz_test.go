@@ -110,3 +110,35 @@ func TestReadyz_StoreErrorReturns503(t *testing.T) {
 		t.Fatalf("expected error %q, got %q", "db unavailable", resp.Error)
 	}
 }
+
+type failingPingStore struct {
+	store.JournalStore
+	err error
+}
+
+func (s failingPingStore) Ping(_ context.Context) error {
+	return s.err
+}
+
+func TestReadyz_HealthCheckerErrorReturns503(t *testing.T) {
+	coord := NewCoordinator(failingPingStore{err: errors.New("ping failed")}, CoordinatorConfig{})
+
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rec := httptest.NewRecorder()
+	coord.handleReadyz(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 Service Unavailable, got %d (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	var resp ReadyzResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode ReadyzResponse: %v", err)
+	}
+	if resp.Status != "not_ready" {
+		t.Fatalf("expected status %q, got %q", "not_ready", resp.Status)
+	}
+	if resp.Error != "ping failed" {
+		t.Fatalf("expected error %q, got %q", "ping failed", resp.Error)
+	}
+}

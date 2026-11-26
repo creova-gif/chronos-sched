@@ -137,7 +137,11 @@ tasks:
 		t.Fatalf("unexpected /metrics response (status=%d):\n%s", mResp.StatusCode, string(mBody))
 	}
 
-	// 4c. Probe live coordinator readiness via doctor and drain worker w-cli-1.
+	// 4c. Probe live coordinator readiness via doctor, list runs, and drain worker w-cli-1.
+	runsOut := runCLI("runs", "--coordinator", coordURL)
+	if !strings.Contains(runsOut, "run_cli_1") {
+		t.Fatalf("expected run_cli_1 in runs output:\n%s", runsOut)
+	}
 	liveDocOut := runCLI("doctor", "--db", dbPath, "--coordinator", coordURL)
 	if !strings.Contains(liveDocOut, "[PASS] coordinator_readyz") {
 		t.Fatalf("expected [PASS] coordinator_readyz in doctor output:\n%s", liveDocOut)

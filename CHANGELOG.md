@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **CLI Runs Command:** Added `chronos runs [--status RUNNING|COMPLETED|FAILED] [--coordinator ...]` to list and filter coordinator runs.
+- **O(1) Readiness Probe:** Added `HealthChecker.Ping` for lightweight, constant-time `/readyz` readiness checks.
+- **Uniform Request Body Guardrails:** Standardized `decodeJSONBody` with a 2 MiB maximum body size across Coordinator HTTP handlers.
+- **Worker Panic Recovery:** Added `invokeHandlerSafe` in the worker execution loop to recover panics and convert them into structured task failures.
+- **Per-Tenant Active Run Quota:** Added `MaxActiveRunsPerTenant` enforcement on workflow submission and forks.
+- **HTTP Security Headers:** Added `SecurityHeadersMiddleware` for baseline security headers and Web Console CSP.
+- **Web Console Auto-Refresh:** Added an `Auto-refresh (3s)` toggle to the embedded Flight-Recorder Web Console.
 - **Per-Tenant Token-Bucket Rate Limiting (ADR-014):** `RateLimitMiddleware` returning `429 Too Many Requests` with `Retry-After`, configured via `runtime.RateLimitConfig` and `chronos server start` flags (`--rate-limit-rps`, `--rate-limit-burst`).
 - **Row-Level Tenant Run Isolation (ADR-014):** `TenantStore` persistence and `Coordinator` enforcement isolating run access and listings by `X-Chronos-Tenant`.
 - **HTTP Payload Guardrails (ADR-014):** `http.MaxBytesReader` request body size limits on Coordinator HTTP endpoints.
