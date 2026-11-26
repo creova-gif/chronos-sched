@@ -602,6 +602,22 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 		writeJSONDecodeError(w, err)
 		return
 	}
+	idemKey := strings.TrimSpace(r.Header.Get(headerIdempotencyKey))
+	if idemKey != "" {
+		resp, found, conflict, err := c.lookupIdempotentRun(r.Context(), idemKey, req.WorkflowYAML)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
+		if conflict {
+			writeJSON(w, http.StatusConflict, ErrorResponse{Error: "idempotency key conflict: workflow differs from original submission"})
+			return
+		}
+		if found {
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+	}
 	if err := c.checkTenantRunQuota(r.Context()); err != nil {
 		if errors.Is(err, ErrTenantQuotaExceeded) {
 			c.metrics.IncRateLimited()
@@ -617,6 +633,7 @@ func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	c.assignRunTenant(r.Context(), resp.RunID)
+	c.recordIdempotentRun(r.Context(), idemKey, resp.RunID, workflowHashYAML(req.WorkflowYAML))
 	writeJSON(w, http.StatusCreated, resp)
 }
 

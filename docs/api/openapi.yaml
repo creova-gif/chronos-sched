@@ -71,6 +71,8 @@ paths:
     post:
       summary: Submit a workflow run
       operationId: submitWorkflow
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
       requestBody:
         required: true
         content:
@@ -78,6 +80,12 @@ paths:
             schema:
               $ref: "#/components/schemas/SubmitWorkflowRequest"
       responses:
+        "200":
+          description: Idempotent replay of an existing workflow run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubmitWorkflowResponse"
         "201":
           description: Workflow run created and started
           content:
@@ -86,6 +94,18 @@ paths:
                 $ref: "#/components/schemas/SubmitWorkflowResponse"
         "400":
           description: Invalid request or workflow YAML
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Idempotency key reused with a different workflow definition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Too Many Requests (rate limit or active run quota exceeded)
           content:
             application/json:
               schema:
@@ -947,6 +967,13 @@ components:
       in: header
       required: false
       description: Optional tenant identifier for multi-tenant request scoping
+      schema:
+        type: string
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Optional per-tenant idempotency key for deduplicating workflow submissions
       schema:
         type: string
 
