@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRateLimitMiddleware_BurstIsolationAndExemptions(t *testing.T) {
@@ -137,5 +139,73 @@ func TestRateLimitMiddleware_DisabledAndDefaultBurst(t *testing.T) {
 	defaultBurst.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/v1/runs", nil))
 	if rec2.Code != http.StatusTooManyRequests {
 		t.Fatalf("default burst req 2: expected 429, got %d", rec2.Code)
+	}
+}
+
+func TestRateLimitMiddleware_BoundedBuckets(t *testing.T) {
+	// 1. Fresh buckets exceed maxRateLimitBuckets: oldest bucket is evicted.
+	rl := newRateLimiter(10, 5)
+	base := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
+	total := maxRateLimitBuckets + 256
+	for i := 0; i < total; i++ {
+		tenant := fmt.Sprintf("tenant-%d", i)
+		allowed, _ := rl.allow(tenant, base.Add(time.Duration(i)*time.Millisecond))
+		if !allowed {
+			t.Fatalf("expected first request for %s to be allowed", tenant)
+		}
+		if len(rl.buckets) > maxRateLimitBuckets {
+			t.Fatalf("buckets exceeded cap at i=%d: got %d, want <= %d", i, len(rl.buckets), maxRateLimitBuckets)
+		}
+	}
+	if len(rl.buckets) != maxRateLimitBuckets {
+		t.Fatalf("expected %d buckets after eviction, got %d", maxRateLimitBuckets, len(rl.buckets))
+	}
+	if _, exists := rl.buckets["tenant-0"]; exists {
+		t.Fatalf("expected oldest bucket tenant-0 to be evicted")
+	}
+	newest := fmt.Sprintf("tenant-%d", total-1)
+	if _, exists := rl.buckets[newest]; !exists {
+		t.Fatalf("expected newest bucket %s to remain", newest)
+	}
+
+	// 2. Stale buckets (> staleBucketTTL) are evicted before falling back to oldest.
+	rlStale := newRateLimiter(10, 5)
+	for i := 0; i < maxRateLimitBuckets; i++ {
+		tenant := fmt.Sprintf("stale-%d", i)
+		rlStale.allow(tenant, base)
+	}
+	// Refresh one bucket so only it is non-stale after staleBucketTTL passes.
+	freshTime := base.Add(staleBucketTTL + time.Second)
+	rlStale.allow("stale-0", base.Add(5*time.Minute))
+	rlStale.allow("brand-new", freshTime)
+	if len(rlStale.buckets) != 2 {
+		t.Fatalf("expected 2 buckets after stale eviction (1 fresh + 1 new), got %d", len(rlStale.buckets))
+	}
+	if _, exists := rlStale.buckets["stale-0"]; !exists {
+		t.Fatalf("expected non-stale bucket stale-0 to remain")
+	}
+
+	// 3. Concurrent distinct tenants under -race stay strictly bounded.
+	rlRace := newRateLimiter(10, 5)
+	var wg sync.WaitGroup
+	workers := 16
+	perWorker := (maxRateLimitBuckets / workers) + 64
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < perWorker; j++ {
+				tenant := fmt.Sprintf("w%d-t%d", workerID, j)
+				rlRace.allow(tenant, time.Now())
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	rlRace.mu.Lock()
+	gotBuckets := len(rlRace.buckets)
+	rlRace.mu.Unlock()
+	if gotBuckets > maxRateLimitBuckets {
+		t.Fatalf("concurrent buckets exceeded cap: got %d, want <= %d", gotBuckets, maxRateLimitBuckets)
 	}
 }

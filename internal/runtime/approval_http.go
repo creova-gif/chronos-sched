@@ -43,6 +43,9 @@ func (c *Coordinator) handleTaskApproval(
 	transition func(*engine.RunState, string, ApprovalRequest) (engine.Event, error),
 ) {
 	id := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, id) {
+		return
+	}
 	taskID := r.PathValue("task_id")
 
 	var req ApprovalRequest

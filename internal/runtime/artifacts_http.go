@@ -28,13 +28,16 @@ type ListArtifactsResponse struct {
 }
 
 func (c *Coordinator) handlePutArtifact(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, runID) {
+		return
+	}
 	artStore, ok := c.store.(store.ArtifactStore)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, ErrorResponse{Error: "store does not support artifacts"})
 		return
 	}
 
-	runID := r.PathValue("id")
 	taskID := r.PathValue("task_id")
 	if runID == "" || taskID == "" {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: "run_id and task_id are required"})
@@ -80,6 +83,10 @@ func (c *Coordinator) handlePutArtifact(w http.ResponseWriter, r *http.Request) 
 }
 
 func (c *Coordinator) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, runID) {
+		return
+	}
 	artStore, ok := c.store.(store.ArtifactStore)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, ErrorResponse{Error: "store does not support artifacts"})
@@ -99,6 +106,10 @@ func (c *Coordinator) handleListRunArtifacts(w http.ResponseWriter, r *http.Requ
 }
 
 func (c *Coordinator) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, runID) {
+		return
+	}
 	artStore, ok := c.store.(store.ArtifactStore)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, ErrorResponse{Error: "store does not support artifacts"})
