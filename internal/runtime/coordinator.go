@@ -560,6 +560,7 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/pause", c.handlePauseRun)
 	mux.HandleFunc("POST /v1/runs/{id}/resume", c.handleResumeRun)
 	mux.HandleFunc("POST /v1/runs/{id}/cancel", c.handleCancelRun)
+	mux.HandleFunc("GET /v1/workers", c.handleListWorkers)
 	mux.HandleFunc("POST /v1/workers/register", c.handleWorkerRegister)
 	mux.HandleFunc("POST /v1/workers/poll", c.handleWorkerPoll)
 	mux.HandleFunc("POST /v1/workers/heartbeat", c.handleWorkerHeartbeat)

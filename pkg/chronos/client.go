@@ -109,6 +109,7 @@ type WorkerInfo struct {
 	Resources     map[string]int `json:"resources,omitempty"`
 	LastHeartbeat int64          `json:"last_heartbeat_ns"`
 	Alive         bool           `json:"alive"`
+	Draining      bool           `json:"draining,omitempty"`
 }
 
 // CheckpointInfo describes a saved checkpoint within a run.
@@ -348,6 +349,17 @@ func (c *Client) DrainWorker(ctx context.Context, workerID string) (WorkerDrainR
 		return WorkerDrainResponse{}, err
 	}
 	return resp, nil
+}
+
+// ListWorkers returns all registered workers and their liveness state (GET /v1/workers).
+func (c *Client) ListWorkers(ctx context.Context) ([]WorkerInfo, error) {
+	var resp struct {
+		Workers []WorkerInfo `json:"workers"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/workers", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Workers, nil
 }
 
 func (c *Client) doJSON(ctx context.Context, method, path string, reqBody, respBody any) error {

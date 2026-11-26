@@ -131,6 +131,7 @@ Usage:
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
   chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec]
   chronos worker start [--coordinator http://127.0.0.1:7420] [--auth-token tok] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
+  chronos worker list [--coordinator http://127.0.0.1:7420]
   chronos worker drain <worker_id> [--coordinator http://127.0.0.1:7420]
   chronos workflow run <file.yaml> [--coordinator http://127.0.0.1:7420] [--run-id id]
   chronos workflow inspect <run_id> [--live] [--coordinator http://127.0.0.1:7420]
@@ -523,11 +524,31 @@ func cmdServerStart(args []string) error {
 
 func cmdWorker(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: chronos worker <start|drain> ...")
+		return fmt.Errorf("usage: chronos worker <start|list|drain> ...")
 	}
 	switch args[0] {
 	case "start":
 		return cmdWorkerStart(args[1:])
+	case "list":
+		fs := flag.NewFlagSet("worker list", flag.ContinueOnError)
+		coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
+		if err := parseFlagsAnyOrder(fs, args[1:]); err != nil {
+			return err
+		}
+		var resp struct {
+			Workers []runtime.WorkerInfo `json:"workers"`
+		}
+		if err := rpcGet(strings.TrimRight(*coordURL, "/")+"/v1/workers", &resp); err != nil {
+			return err
+		}
+		if len(resp.Workers) == 0 {
+			fmt.Println("No registered workers.")
+			return nil
+		}
+		for _, w := range resp.Workers {
+			fmt.Printf("%s alive=%v draining=%v concurrency=%d pid=%d\n", w.WorkerID, w.Alive, w.Draining, w.Concurrency, w.PID)
+		}
+		return nil
 	case "drain":
 		fs := flag.NewFlagSet("worker drain", flag.ContinueOnError)
 		coordURL := fs.String("coordinator", defaultCoordURL, "coordinator HTTP URL")
@@ -545,7 +566,7 @@ func cmdWorker(args []string) error {
 		fmt.Printf("Worker %s draining=%v in_flight=%d\n", resp.WorkerID, resp.Draining, resp.InFlightTasks)
 		return nil
 	default:
-		return fmt.Errorf("unknown worker subcommand %q (expected start or drain)", args[0])
+		return fmt.Errorf("unknown worker subcommand %q (expected start, list, or drain)", args[0])
 	}
 }
 

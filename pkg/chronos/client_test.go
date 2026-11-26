@@ -387,3 +387,98 @@ func TestClientReadyAndDrainWorker(t *testing.T) {
 		t.Fatalf("unexpected WorkerDrainResponse: %+v", drainResp)
 	}
 }
+
+func TestClientListWorkers(t *testing.T) {
+	ctx := context.Background()
+	const expectedToken = "secret-workers-token"
+
+	var statusCode int = http.StatusOK
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/workers" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"route not found"}`))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+expectedToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch statusCode {
+		case http.StatusUnauthorized:
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid token"}`))
+		case http.StatusInternalServerError:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"internal error"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"workers": []chronos.WorkerInfo{
+					{
+						WorkerID:      "w-1",
+						PID:           1001,
+						Concurrency:   4,
+						Resources:     map[string]int{"gpu": 1},
+						LastHeartbeat: 1700000000,
+						Alive:         true,
+						Draining:      false,
+					},
+					{
+						WorkerID:      "w-2",
+						PID:           1002,
+						Concurrency:   2,
+						LastHeartbeat: 1699999000,
+						Alive:         false,
+						Draining:      true,
+					},
+				},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := chronos.NewClient(srv.URL).WithBearerToken(expectedToken)
+
+	// 1. 200 OK returns decoded []WorkerInfo.
+	workers, err := client.ListWorkers(ctx)
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("expected 2 workers, got %d", len(workers))
+	}
+	if workers[0].WorkerID != "w-1" || workers[0].PID != 1001 || workers[0].Concurrency != 4 ||
+		workers[0].Resources["gpu"] != 1 || workers[0].LastHeartbeat != 1700000000 ||
+		!workers[0].Alive || workers[0].Draining {
+		t.Fatalf("unexpected workers[0]: %+v", workers[0])
+	}
+	if workers[1].WorkerID != "w-2" || workers[1].PID != 1002 || workers[1].Concurrency != 2 ||
+		workers[1].LastHeartbeat != 1699999000 || workers[1].Alive || !workers[1].Draining {
+		t.Fatalf("unexpected workers[1]: %+v", workers[1])
+	}
+
+	// 2. 401 Unauthorized returns *chronos.APIError.
+	statusCode = http.StatusUnauthorized
+	_, err = client.ListWorkers(ctx)
+	var apiErr *chronos.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized || apiErr.Message != "invalid token" {
+		t.Fatalf("expected 401 APIError, got %v", err)
+	}
+
+	// 3. 500 Internal Server Error returns *chronos.APIError.
+	statusCode = http.StatusInternalServerError
+	_, err = client.ListWorkers(ctx)
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError || apiErr.Message != "internal error" {
+		t.Fatalf("expected 500 APIError, got %v", err)
+	}
+
+	// 4. Missing/wrong Bearer token triggers 401 *chronos.APIError.
+	statusCode = http.StatusOK
+	unauthClient := chronos.NewClient(srv.URL).WithBearerToken("wrong-token")
+	_, err = unauthClient.ListWorkers(ctx)
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized || apiErr.Message != "unauthorized" {
+		t.Fatalf("expected 401 APIError for wrong token, got %v", err)
+	}
+}
