@@ -567,6 +567,8 @@ func (c *Coordinator) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/runs/{id}/tasks/{task_id}/artifacts", c.handlePutArtifact)
 	mux.HandleFunc("GET /v1/runs/{id}/artifacts", c.handleListRunArtifacts)
 	mux.HandleFunc("GET /v1/runs/{id}/tasks/{task_id}/artifacts/{name}", c.handleGetArtifact)
+	mux.HandleFunc("POST /v1/runs/{id}/tasks/{task_id}/request-approval", c.handleRequestTaskApproval)
+	mux.HandleFunc("POST /v1/runs/{id}/tasks/{task_id}/approve", c.handleResolveTaskApproval)
 	mux.HandleFunc("GET /v1/workers", c.handleListWorkers)
 	mux.HandleFunc("POST /v1/workers/register", c.handleWorkerRegister)
 	mux.HandleFunc("POST /v1/workers/poll", c.handleWorkerPoll)
@@ -579,7 +581,7 @@ func (c *Coordinator) Handler() http.Handler {
 	if logger == nil {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
-	return ObservabilityMiddleware(logger, AuthMiddleware(c.cfg.AuthToken, mux))
+	return ObservabilityMiddleware(logger, TenantMiddleware(AuthMiddleware(c.cfg.AuthToken, mux)))
 }
 
 func (c *Coordinator) handleSubmitWorkflow(w http.ResponseWriter, r *http.Request) {
