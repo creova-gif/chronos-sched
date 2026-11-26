@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
 ### Added
 - **Content-Addressed Task Artifacts (ADR-012):** SQLite `task_artifacts` store (`internal/store/artifacts.go`, `internal/store/sqlite/artifacts.go`), Coordinator HTTP endpoints (`POST /v1/runs/{id}/tasks/{task_id}/artifacts`, `GET /v1/runs/{id}/artifacts`, `GET /v1/runs/{id}/tasks/{task_id}/artifacts/{name}`), `pkg/chronos` SDK helpers, and `chronos artifacts list|get|put` CLI commands.
 - **Embedded Flight-Recorder Web Console (ADR-012):** Zero-build `embed.FS` web UI served at `GET /ui/` (`internal/ui/`) for inspecting runs, workers, DLQ entries, and `/readyz` health.
