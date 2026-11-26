@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Content-Addressed Task Artifacts (ADR-012):** SQLite `task_artifacts` store (`internal/store/artifacts.go`, `internal/store/sqlite/artifacts.go`), Coordinator HTTP endpoints (`POST /v1/runs/{id}/tasks/{task_id}/artifacts`, `GET /v1/runs/{id}/artifacts`, `GET /v1/runs/{id}/tasks/{task_id}/artifacts/{name}`), `pkg/chronos` SDK helpers, and `chronos artifacts list|get|put` CLI commands.
+- **Embedded Flight-Recorder Web Console (ADR-012):** Zero-build `embed.FS` web UI served at `GET /ui/` (`internal/ui/`) for inspecting runs, workers, DLQ entries, and `/readyz` health.
+- **Human-in-the-Loop Approval Gates (ADR-013):** Deterministic `WAITING_APPROVAL` task state with `TASK_APPROVAL_REQUESTED`, `TASK_APPROVED`, and `TASK_REJECTED` journal events (`internal/engine/approval.go`), Coordinator endpoints (`POST /v1/runs/{id}/tasks/{task_id}/request-approval`, `POST /v1/runs/{id}/tasks/{task_id}/approve`), `pkg/chronos` SDK methods, and `chronos approve` CLI command.
+- **Multi-Tenant `X-Chronos-Tenant` Middleware (ADR-013):** `TenantMiddleware` (`internal/runtime/tenant.go`) validating `X-Chronos-Tenant` (defaulting to `"default"`), echoing the resolved tenant header, and propagating tenant context across requests.
+- **Container & CI Tooling:** Added `Dockerfile`, `docker-compose.yml`, and `.github/workflows/ci.yml` for reproducible builds and automated CI verification.
+- **Architecture Decision Records:** Added `ADR-012` (`docs/adr/012-task-artifacts-and-embedded-ui.md`) and `ADR-013` (`docs/adr/013-approval-gates-and-tenant-isolation.md`).
 - **Timeline Merge Execution (ADR-003):** Execute deterministic branch merges (`chronos merge --apply`, `POST /v1/runs/{id}/merge`) in addition to dry-run merge planning.
 - **Coordinator HA Leader Election (ADR-004):** Active-standby Coordinator leader lease election (`--ha-id`, `--ha-ttl`).
 - **Prometheus Metrics & Instrumentation (ADR-005):** `/metrics` Prometheus exposition endpoint and runtime instrumentation.

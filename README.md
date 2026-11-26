@@ -63,6 +63,7 @@ chronos inspect-at run_001 --checkpoint 3
 - [ADR-010: Coordinator Bearer Auth](docs/adr/010-coordinator-bearer-auth.md)
 - [ADR-011: Dead-Letter Queue Requeue, Middleware & Readiness Probe](docs/adr/011-dlq-requeue-and-observability.md)
 - [ADR-012: Task Artifacts and Embedded Flight-Recorder Web UI](docs/adr/012-task-artifacts-and-embedded-ui.md)
+- [ADR-013: Approval Gates and Tenant Isolation](docs/adr/013-approval-gates-and-tenant-isolation.md)
 - [Dead-Letter Queue (`chronos dlq list`), JSON Request Logging (`slog`), W3C `traceparent` & TUI Time-Travel Scrubber (`[s]` in TUI)](CHANGELOG.md)
 - [OpenAPI 3.1 Specification](docs/api/openapi.yaml)
 - [CHANGELOG](CHANGELOG.md)

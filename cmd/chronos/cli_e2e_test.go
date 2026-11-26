@@ -151,6 +151,25 @@ tasks:
 		t.Fatalf("unexpected worker list output:\n%s", listOut)
 	}
 
+	// 4d. Upload, list, and download a task artifact while the live server is running.
+	reportContent := "chronos-artifact-e2e-payload\n"
+	reportPath := filepath.Join(dir, "report.txt")
+	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("write artifact temp file: %v", err)
+	}
+	putArtOut := runCLI("artifacts", "put", "run_cli_1", "step1", "report.txt", reportPath, "--coordinator", coordURL)
+	if !strings.Contains(putArtOut, "Uploaded artifact") || !strings.Contains(putArtOut, "report.txt") {
+		t.Fatalf("unexpected artifacts put output:\n%s", putArtOut)
+	}
+	listArtOut := runCLI("artifacts", "list", "run_cli_1", "--coordinator", coordURL)
+	if !strings.Contains(listArtOut, "report.txt") {
+		t.Fatalf("expected report.txt in artifacts list output:\n%s", listArtOut)
+	}
+	getArtOut := runCLI("artifacts", "get", "run_cli_1", "step1", "report.txt", "--coordinator", coordURL)
+	if getArtOut != reportContent {
+		t.Fatalf("unexpected artifacts get output: got %q, want %q", getArtOut, reportContent)
+	}
+
 	// 5. Stop server & worker, then run offline SQLite CLI commands: history, replay, diff, branches.
 	_ = workerCmd.Process.Kill()
 	_, _ = workerCmd.Process.Wait()

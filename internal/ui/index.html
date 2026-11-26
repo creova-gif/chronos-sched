@@ -206,6 +206,35 @@
       border-color: rgba(56, 189, 248, 0.45);
       color: #bae6fd;
     }
+    .panel-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .panel-divider {
+      border: 0;
+      border-top: 1px solid var(--border);
+      margin: 1rem 0;
+    }
+    .sub-heading {
+      margin: 0 0 0.5rem 0;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    a.dl-link {
+      color: var(--accent);
+      text-decoration: none;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+    }
+    a.dl-link:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
@@ -215,8 +244,9 @@
       <span id="ready-badge" class="badge">checking...</span>
     </div>
     <div class="controls">
+      <input id="tenant-id" type="text" placeholder="Tenant ID (optional)" aria-label="Tenant ID">
       <input id="auth-token" type="password" placeholder="Bearer token (optional)" aria-label="Bearer token">
-      <button id="save-token" type="button">Save Token</button>
+      <button id="save-token" type="button">Save Auth</button>
       <button id="refresh-btn" class="primary" type="button">Refresh</button>
     </div>
   </header>
@@ -313,16 +343,71 @@
         </table>
       </div>
     </section>
+
+    <section class="card" aria-label="Artifacts and Approvals">
+      <div class="section-header">
+        <h2>Artifacts &amp; Approvals</h2>
+        <span id="artifacts-count" class="badge">0</span>
+      </div>
+      <datalist id="runs-datalist"></datalist>
+
+      <h3 class="sub-heading">Run Artifacts</h3>
+      <div class="panel-controls">
+        <input id="artifacts-run-id" type="text" list="runs-datalist" placeholder="Run ID" aria-label="Artifacts Run ID">
+        <button id="load-artifacts-btn" class="primary" type="button">List Artifacts</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Task ID</th>
+              <th>Name</th>
+              <th>Content-Type</th>
+              <th>Size</th>
+              <th>SHA-256</th>
+              <th>Download</th>
+            </tr>
+          </thead>
+          <tbody id="artifacts-body">
+            <tr><td colspan="6" class="empty">Enter a Run ID and click List Artifacts.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <hr class="panel-divider">
+
+      <h3 class="sub-heading">Task Approval</h3>
+      <div class="panel-controls">
+        <input id="approval-run-id" type="text" list="runs-datalist" placeholder="Run ID" aria-label="Approval Run ID">
+        <input id="approval-task-id" type="text" placeholder="Task ID" aria-label="Approval Task ID">
+        <input id="approval-actor" type="text" placeholder="Actor (optional)" aria-label="Approval Actor">
+        <input id="approval-comment" type="text" placeholder="Comment (optional)" aria-label="Approval Comment">
+        <button id="approve-btn" class="primary" type="button">Approve</button>
+        <button id="reject-btn" class="danger" type="button">Reject</button>
+      </div>
+    </section>
   </main>
 
   <script>
     (function () {
       const TOKEN_KEY = "chronos_auth_token";
+      const TENANT_KEY = "chronos_tenant_id";
+      const tenantInput = document.getElementById("tenant-id");
       const tokenInput = document.getElementById("auth-token");
       const saveTokenBtn = document.getElementById("save-token");
       const refreshBtn = document.getElementById("refresh-btn");
       const banner = document.getElementById("banner");
+      const runsDatalist = document.getElementById("runs-datalist");
+      const artifactsRunInput = document.getElementById("artifacts-run-id");
+      const loadArtifactsBtn = document.getElementById("load-artifacts-btn");
+      const approvalRunInput = document.getElementById("approval-run-id");
+      const approvalTaskInput = document.getElementById("approval-task-id");
+      const approvalActorInput = document.getElementById("approval-actor");
+      const approvalCommentInput = document.getElementById("approval-comment");
+      const approveBtn = document.getElementById("approve-btn");
+      const rejectBtn = document.getElementById("reject-btn");
 
+      tenantInput.value = localStorage.getItem(TENANT_KEY) || "";
       tokenInput.value = localStorage.getItem(TOKEN_KEY) || "";
 
       function showBanner(msg, kind) {
@@ -340,6 +425,10 @@
         const tok = (localStorage.getItem(TOKEN_KEY) || "").trim();
         if (tok) {
           headers["Authorization"] = "Bearer " + tok;
+        }
+        const tenant = (localStorage.getItem(TENANT_KEY) || "").trim();
+        if (tenant) {
+          headers["X-Chronos-Tenant"] = tenant;
         }
         return headers;
       }
@@ -427,7 +516,13 @@
           return;
         }
         tbody.textContent = "";
+        runsDatalist.textContent = "";
         for (const run of runs) {
+          if (run.run_id) {
+            const opt = document.createElement("option");
+            opt.value = run.run_id;
+            runsDatalist.appendChild(opt);
+          }
           const tr = document.createElement("tr");
           tr.appendChild(cell(run.run_id, "mono"));
           tr.appendChild(cell(run.workflow_name));
@@ -546,6 +641,89 @@
         }
       }
 
+      async function loadArtifacts() {
+        const runId = artifactsRunInput.value.trim();
+        const tbody = document.getElementById("artifacts-body");
+        const count = document.getElementById("artifacts-count");
+        if (!runId) {
+          showBanner("Enter a Run ID to list artifacts.", "error");
+          return;
+        }
+        loadArtifactsBtn.disabled = true;
+        try {
+          const data = await apiFetch("/v1/runs/" + encodeURIComponent(runId) + "/artifacts");
+          const artifacts = data && Array.isArray(data.artifacts) ? data.artifacts : [];
+          count.textContent = String(artifacts.length);
+          if (artifacts.length === 0) {
+            emptyRow(tbody, 6, "No artifacts recorded for run " + runId + ".");
+            return;
+          }
+          tbody.textContent = "";
+          for (const art of artifacts) {
+            const tr = document.createElement("tr");
+            tr.appendChild(cell(art.task_id, "mono"));
+            tr.appendChild(cell(art.name, "mono"));
+            tr.appendChild(cell(art.content_type, "mono"));
+            tr.appendChild(cell(typeof art.size_bytes === "number" ? art.size_bytes + " B" : "-", "mono"));
+            tr.appendChild(cell(art.sha256, "mono"));
+
+            const dlTd = document.createElement("td");
+            if (art.task_id && art.name) {
+              const a = document.createElement("a");
+              a.className = "dl-link";
+              a.href = "/v1/runs/" + encodeURIComponent(runId) + "/tasks/" + encodeURIComponent(art.task_id) + "/artifacts/" + encodeURIComponent(art.name);
+              a.download = art.name;
+              a.textContent = "Download";
+              dlTd.appendChild(a);
+            } else {
+              dlTd.textContent = "-";
+            }
+            tr.appendChild(dlTd);
+            tbody.appendChild(tr);
+          }
+        } catch (err) {
+          showBanner("Failed to load artifacts for " + runId + ": " + err.message, "error");
+        } finally {
+          loadArtifactsBtn.disabled = false;
+        }
+      }
+
+      async function resolveApproval(approved) {
+        const runId = approvalRunInput.value.trim();
+        const taskId = approvalTaskInput.value.trim();
+        if (!runId || !taskId) {
+          showBanner("Run ID and Task ID are required for approval.", "error");
+          return;
+        }
+        const payload = { approved: Boolean(approved) };
+        const actor = approvalActorInput.value.trim();
+        const comment = approvalCommentInput.value.trim();
+        if (actor) payload.actor = actor;
+        if (comment) payload.comment = comment;
+
+        approveBtn.disabled = true;
+        rejectBtn.disabled = true;
+        try {
+          const res = await apiFetch(
+            "/v1/runs/" + encodeURIComponent(runId) + "/tasks/" + encodeURIComponent(taskId) + "/approve",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            }
+          );
+          const actionLabel = approved ? "Approved" : "Rejected";
+          const statusNote = res && res.task_status ? " (status: " + res.task_status + ")" : "";
+          showBanner(actionLabel + " task " + taskId + " on run " + runId + statusNote, "info");
+          await refreshAll();
+        } catch (err) {
+          showBanner("Failed to " + (approved ? "approve" : "reject") + " task " + taskId + ": " + err.message, "error");
+        } finally {
+          approveBtn.disabled = false;
+          rejectBtn.disabled = false;
+        }
+      }
+
       async function refreshAll() {
         const errors = [];
         for (const fn of [loadReadyz, loadRuns, loadWorkers, loadDLQ]) {
@@ -561,16 +739,25 @@
       }
 
       saveTokenBtn.addEventListener("click", function () {
-        const val = tokenInput.value.trim();
-        if (val) {
-          localStorage.setItem(TOKEN_KEY, val);
-          showBanner("Bearer token saved to localStorage.", "info");
+        const tokVal = tokenInput.value.trim();
+        const tenantVal = tenantInput.value.trim();
+        if (tokVal) {
+          localStorage.setItem(TOKEN_KEY, tokVal);
         } else {
           localStorage.removeItem(TOKEN_KEY);
-          showBanner("Bearer token cleared.", "info");
         }
+        if (tenantVal) {
+          localStorage.setItem(TENANT_KEY, tenantVal);
+        } else {
+          localStorage.removeItem(TENANT_KEY);
+        }
+        showBanner(tokVal || tenantVal ? "Auth settings saved to localStorage." : "Auth settings cleared.", "info");
         refreshAll();
       });
+
+      loadArtifactsBtn.addEventListener("click", loadArtifacts);
+      approveBtn.addEventListener("click", function () { resolveApproval(true); });
+      rejectBtn.addEventListener("click", function () { resolveApproval(false); });
 
       refreshBtn.addEventListener("click", function () {
         showBanner("", "info");

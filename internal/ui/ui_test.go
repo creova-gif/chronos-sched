@@ -25,8 +25,11 @@ func TestHandlerServesEmbeddedUI(t *testing.T) {
 		if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 			t.Fatalf("GET %s Cache-Control = %q, want no-store", path, cc)
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "ChronosSched") {
-			t.Fatalf("GET %s body does not contain ChronosSched", path)
+		body := rec.Body.String()
+		for _, want := range []string{"ChronosSched", "X-Chronos-Tenant", "/artifacts", "/approve"} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("GET %s body does not contain %q", path, want)
+			}
 		}
 	}
 }

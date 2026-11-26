@@ -482,3 +482,22 @@ func TestClientListWorkers(t *testing.T) {
 		t.Fatalf("expected 401 APIError for wrong token, got %v", err)
 	}
 }
+
+func TestClientWithTenantHeader(t *testing.T) {
+	ctx := context.Background()
+	var gotTenant string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTenant = r.Header.Get("X-Chronos-Tenant")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := chronos.NewClient(srv.URL).WithTenant("acme-prod")
+	if err := client.Health(ctx); err != nil {
+		t.Fatalf("Health() error = %v", err)
+	}
+	if gotTenant != "acme-prod" {
+		t.Fatalf("expected X-Chronos-Tenant header %q, got %q", "acme-prod", gotTenant)
+	}
+}
