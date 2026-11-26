@@ -43,6 +43,8 @@ type Recorder struct {
 	timelinesMerged     atomic.Uint64
 	deadLettersRecorded atomic.Int64
 	workersDrained      atomic.Int64
+	rateLimited         atomic.Int64
+	tenantDenied        atomic.Int64
 
 	histMu              sync.RWMutex
 	latencyBucketCounts [len(latencyBuckets)]uint64
@@ -143,6 +145,22 @@ func (r *Recorder) IncWorkersDrained() {
 	r.workersDrained.Add(1)
 }
 
+// IncRateLimited increments chronos_rate_limited_total.
+func (r *Recorder) IncRateLimited() {
+	if r == nil {
+		return
+	}
+	r.rateLimited.Add(1)
+}
+
+// IncTenantDenied increments chronos_tenant_denied_total.
+func (r *Recorder) IncTenantDenied() {
+	if r == nil {
+		return
+	}
+	r.tenantDenied.Add(1)
+}
+
 // ObserveScheduleLatency records a scheduling decision duration into the
 // chronos_schedule_latency_ms histogram. Negative durations are clamped to 0.
 func (r *Recorder) ObserveScheduleLatency(d time.Duration) {
@@ -185,6 +203,8 @@ func (r *Recorder) RenderPrometheus() string {
 	writeCounter(&sb, "chronos_timelines_merged_total", "Total number of timelines merged.", r.timelinesMerged.Load())
 	writeCounter(&sb, "chronos_dead_letters_recorded_total", "Total number of dead-lettered tasks recorded.", uint64(r.deadLettersRecorded.Load()))
 	writeCounter(&sb, "chronos_workers_drained_total", "Total number of workers drained.", uint64(r.workersDrained.Load()))
+	writeCounter(&sb, "chronos_rate_limited_total", "Total number of requests rejected due to rate limiting.", uint64(r.rateLimited.Load()))
+	writeCounter(&sb, "chronos_tenant_denied_total", "Total number of requests denied due to tenant authorization.", uint64(r.tenantDenied.Load()))
 
 	r.histMu.RLock()
 	bucketCounts := r.latencyBucketCounts

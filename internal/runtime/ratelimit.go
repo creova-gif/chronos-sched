@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+const (
+	maxRateLimitBuckets = 4096
+	staleBucketTTL      = 10 * time.Minute
+)
+
 // RateLimitConfig configures per-tenant token-bucket HTTP rate limiting.
 type RateLimitConfig struct {
 	RequestsPerSecond float64
@@ -39,6 +44,9 @@ func (l *rateLimiter) allow(tenant string, now time.Time) (bool, int) {
 
 	b, ok := l.buckets[tenant]
 	if !ok {
+		if len(l.buckets) >= maxRateLimitBuckets {
+			l.evictLocked(now)
+		}
 		b = &tokenBucket{
 			tokens: float64(l.burst),
 			last:   now,
@@ -60,6 +68,33 @@ func (l *rateLimiter) allow(tenant string, now time.Time) (bool, int) {
 		return true, int(b.tokens)
 	}
 	return false, 0
+}
+
+// evictLocked removes stale buckets first, then the oldest bucket if still at capacity.
+// Caller must hold l.mu.
+func (l *rateLimiter) evictLocked(now time.Time) {
+	for k, entry := range l.buckets {
+		if now.Sub(entry.last) > staleBucketTTL {
+			delete(l.buckets, k)
+		}
+	}
+	if len(l.buckets) < maxRateLimitBuckets {
+		return
+	}
+
+	var oldestKey string
+	var oldestTime time.Time
+	hasOldest := false
+	for k, entry := range l.buckets {
+		if !hasOldest || entry.last.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = entry.last
+			hasOldest = true
+		}
+	}
+	if hasOldest {
+		delete(l.buckets, oldestKey)
+	}
 }
 
 func isRateLimitExempt(r *http.Request) bool {

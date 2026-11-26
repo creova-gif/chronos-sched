@@ -617,6 +617,9 @@ func (c *Coordinator) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) handleRunLifecycle(w http.ResponseWriter, r *http.Request, action string) {
 	runID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, runID) {
+		return
+	}
 	var req RunLifecycleRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
@@ -660,6 +663,9 @@ func (c *Coordinator) handleRunLifecycle(w http.ResponseWriter, r *http.Request,
 
 func (c *Coordinator) handleMergeRun(w http.ResponseWriter, r *http.Request) {
 	baseID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, baseID) {
+		return
+	}
 	var req MergeRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: err.Error()})
@@ -708,12 +714,8 @@ func (c *Coordinator) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
-	if ts, ok := c.store.(store.TenantStore); ok {
-		owner, err := ts.GetRunTenant(r.Context(), runID)
-		if err == nil && owner != TenantFromContext(r.Context()) {
-			writeJSON(w, http.StatusNotFound, ErrorResponse{Error: store.ErrRunNotFound.Error()})
-			return
-		}
+	if !c.authorizeRunTenant(w, r, runID) {
+		return
 	}
 	snap, err := c.Snapshot(r.Context(), runID)
 	if err != nil {
@@ -729,6 +731,9 @@ func (c *Coordinator) handleGetRun(w http.ResponseWriter, r *http.Request) {
 
 func (c *Coordinator) handleForkRun(w http.ResponseWriter, r *http.Request) {
 	parentID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, parentID) {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req ForkRunRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -986,6 +991,9 @@ func (c *Coordinator) applyTaskCommand(w http.ResponseWriter, r *http.Request, r
 
 func (c *Coordinator) handleRunEventsSSE(w http.ResponseWriter, r *http.Request) {
 	runID := r.PathValue("id")
+	if !c.authorizeRunTenant(w, r, runID) {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: "streaming unsupported"})
@@ -1012,8 +1020,21 @@ func (c *Coordinator) handleRunEventsSSE(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 
 	var lastSeq int64
+	var curStatus engine.RunStatus
 	for _, ev := range history {
-		b, _ := json.Marshal(SSEMessage{Event: ev})
+		switch ev.Type {
+		case engine.EventRunStarted, engine.EventRunResumed:
+			curStatus = engine.RunStatusRunning
+		case engine.EventRunPaused:
+			curStatus = engine.RunStatusPaused
+		case engine.EventRunCompleted:
+			curStatus = engine.RunStatusCompleted
+		case engine.EventRunFailed:
+			curStatus = engine.RunStatusFailed
+		case engine.EventRunCancelled:
+			curStatus = engine.RunStatusCancelled
+		}
+		b, _ := json.Marshal(SSEMessage{Event: ev, RunStatus: curStatus})
 		_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 		lastSeq = ev.Seq
 	}
