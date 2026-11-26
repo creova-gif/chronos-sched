@@ -240,6 +240,40 @@ func TestAuthMiddlewareWithAuditLogsDenied(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareWithAuditAndMetricsIncrementsCounter(t *testing.T) {
+	const token = "secret-token"
+	var deniedCount int
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := runtime.AuthMiddlewareWithAuditAndMetrics(token, nil, func() {
+		deniedCount++
+	}, next)
+
+	deniedReq := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	deniedReq.Header.Set("Authorization", "Bearer wrong-token")
+	deniedRec := httptest.NewRecorder()
+	handler.ServeHTTP(deniedRec, deniedReq)
+	if deniedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", deniedRec.Code)
+	}
+	if deniedCount != 1 {
+		t.Fatalf("expected onDenied count = 1 after 401, got %d", deniedCount)
+	}
+
+	okReq := httptest.NewRequest(http.MethodGet, "/v1/runs", nil)
+	okReq.Header.Set("Authorization", "Bearer "+token)
+	okRec := httptest.NewRecorder()
+	handler.ServeHTTP(okRec, okReq)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", okRec.Code)
+	}
+	if deniedCount != 1 {
+		t.Fatalf("expected onDenied count to remain 1 after 200, got %d", deniedCount)
+	}
+}
+
 func TestAuthBeforeRateLimitProtectsTenantBucket(t *testing.T) {
 	okHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

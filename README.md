@@ -39,7 +39,7 @@ flowchart LR
     end
 
     subgraph Coordinator["Coordinator HTTP Server"]
-        MW["ObservabilityMiddleware -> TenantMiddleware -> AuthMiddleware"]
+        MW["Observability -> SecurityHeaders -> Tenant -> Auth -> RateLimit"]
         Engine["Pure Deterministic DAG Engine"]
         Store["SQLite WAL Dual-Pool\n(runs, events, dead_letters, task_artifacts)"]
         MW --> Engine --> Store

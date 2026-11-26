@@ -52,6 +52,9 @@ func TestRecorderCountersAndPrometheusFormat(t *testing.T) {
 	for range 13 {
 		rec.IncTenantDenied()
 	}
+	for range 14 {
+		rec.IncAuthDenied()
+	}
 
 	out := rec.RenderPrometheus()
 
@@ -86,6 +89,9 @@ func TestRecorderCountersAndPrometheusFormat(t *testing.T) {
 		"# HELP chronos_tenant_denied_total Total number of requests denied due to tenant authorization.",
 		"# TYPE chronos_tenant_denied_total counter",
 		"chronos_tenant_denied_total 13",
+		"# HELP chronos_auth_denied_total Total number of requests denied due to bearer authentication.",
+		"# TYPE chronos_auth_denied_total counter",
+		"chronos_auth_denied_total 14",
 		"# TYPE chronos_schedule_latency_ms histogram",
 		"chronos_schedule_latency_ms_bucket{le=\"+Inf\"} 0",
 		"chronos_schedule_latency_ms_sum 0",
@@ -186,6 +192,7 @@ func TestRecorderConcurrentUpdates(t *testing.T) {
 				rec.IncWorkersDrained()
 				rec.IncRateLimited()
 				rec.IncTenantDenied()
+				rec.IncAuthDenied()
 				rec.ObserveScheduleLatency(time.Duration((id+i)%120) * time.Millisecond)
 			}
 		}(g)
@@ -237,6 +244,7 @@ func TestRecorderConcurrentUpdates(t *testing.T) {
 		"chronos_workers_drained_total",
 		"chronos_rate_limited_total",
 		"chronos_tenant_denied_total",
+		"chronos_auth_denied_total",
 	}
 	for _, name := range counters {
 		wantLine := name + " " + strconv.FormatUint(wantTotal, 10) + "\n"
@@ -317,6 +325,7 @@ func TestRecorderNilSafety(t *testing.T) {
 	rec.IncWorkersDrained()
 	rec.IncRateLimited()
 	rec.IncTenantDenied()
+	rec.IncAuthDenied()
 	rec.ObserveScheduleLatency(time.Millisecond)
 
 	if got := rec.RenderPrometheus(); got != "" {
