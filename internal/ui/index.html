@@ -21,6 +21,26 @@
       --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     * { box-sizing: border-box; }
+    :focus-visible {
+      outline: 2px solid #38bdf8;
+      outline-offset: 2px;
+    }
+    .skip-link {
+      position: absolute;
+      top: -100%;
+      left: 1rem;
+      z-index: 1000;
+      background: var(--accent);
+      color: #04101d;
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      text-decoration: none;
+    }
+    .skip-link:focus {
+      top: 0.75rem;
+    }
     body {
       margin: 0;
       font-family: var(--sans);
@@ -206,7 +226,7 @@
       font-size: 0.875rem;
       padding: 0.75rem 0;
     }
-    #banner {
+    .status-banner {
       display: none;
       padding: 0.65rem 1rem;
       border-radius: 8px;
@@ -214,12 +234,12 @@
       border: 1px solid var(--border);
       background: var(--surface-alt);
     }
-    #banner.error {
+    .status-banner.error {
       display: block;
       border-color: rgba(239, 68, 68, 0.5);
       color: #fecaca;
     }
-    #banner.info {
+    .status-banner.info {
       display: block;
       border-color: rgba(56, 189, 248, 0.45);
       color: #bae6fd;
@@ -256,6 +276,7 @@
   </style>
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header>
     <div class="brand">
       <h1>ChronosSched Flight-Recorder</h1>
@@ -264,14 +285,14 @@
     <div class="controls">
       <input id="tenant-id" type="text" placeholder="Tenant ID (optional)" aria-label="Tenant ID">
       <input id="auth-token" type="password" placeholder="Bearer token (optional)" aria-label="Bearer token">
-      <button id="save-token" type="button">Save Auth</button>
+      <button id="save-token" type="button" aria-label="Save authentication settings">Save Auth</button>
       <label class="toggle-control"><input id="auto-refresh" type="checkbox" checked> Auto-refresh (3s)</label>
-      <button id="refresh-btn" class="primary" type="button">Refresh</button>
+      <button id="refresh-btn" class="primary" type="button" aria-label="Refresh dashboard">Refresh</button>
     </div>
   </header>
 
-  <main>
-    <div id="banner" role="status"></div>
+  <main id="main-content" tabindex="-1">
+    <div id="status-banner" class="status-banner" role="status" aria-live="polite"></div>
 
     <section class="stats" aria-label="Coordinator readiness">
       <div class="card">
@@ -373,7 +394,7 @@
       <h3 class="sub-heading">Run Artifacts</h3>
       <div class="panel-controls">
         <input id="artifacts-run-id" type="text" list="runs-datalist" placeholder="Run ID" aria-label="Artifacts Run ID">
-        <button id="load-artifacts-btn" class="primary" type="button">List Artifacts</button>
+        <button id="load-artifacts-btn" class="primary" type="button" aria-label="List artifacts for run">List Artifacts</button>
       </div>
       <div class="table-wrap">
         <table>
@@ -401,8 +422,8 @@
         <input id="approval-task-id" type="text" placeholder="Task ID" aria-label="Approval Task ID">
         <input id="approval-actor" type="text" placeholder="Actor (optional)" aria-label="Approval Actor">
         <input id="approval-comment" type="text" placeholder="Comment (optional)" aria-label="Approval Comment">
-        <button id="approve-btn" class="primary" type="button">Approve</button>
-        <button id="reject-btn" class="danger" type="button">Reject</button>
+        <button id="approve-btn" class="primary" type="button" aria-label="Approve task">Approve</button>
+        <button id="reject-btn" class="danger" type="button" aria-label="Reject task">Reject</button>
       </div>
     </section>
   </main>
@@ -416,7 +437,7 @@
       const saveTokenBtn = document.getElementById("save-token");
       const autoRefreshCheckbox = document.getElementById("auto-refresh");
       const refreshBtn = document.getElementById("refresh-btn");
-      const banner = document.getElementById("banner");
+      const statusBanner = document.getElementById("status-banner");
       const runsDatalist = document.getElementById("runs-datalist");
       const artifactsRunInput = document.getElementById("artifacts-run-id");
       const loadArtifactsBtn = document.getElementById("load-artifacts-btn");
@@ -430,14 +451,14 @@
       tenantInput.value = localStorage.getItem(TENANT_KEY) || "";
       tokenInput.value = localStorage.getItem(TOKEN_KEY) || "";
 
-      function showBanner(msg, kind) {
+      function announce(msg, isError) {
         if (!msg) {
-          banner.className = "";
-          banner.textContent = "";
+          statusBanner.className = "status-banner";
+          statusBanner.textContent = "";
           return;
         }
-        banner.className = kind === "error" ? "error" : "info";
-        banner.textContent = msg;
+        statusBanner.className = "status-banner " + (isError ? "error" : "info");
+        statusBanner.textContent = msg;
       }
 
       function authHeaders(extra) {
@@ -565,10 +586,10 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ worker_id: workerId })
           });
-          showBanner("Drain requested for worker " + workerId, "info");
+          announce("Drain requested for worker " + workerId, false);
           await refreshAll();
         } catch (err) {
-          showBanner("Failed to drain worker " + workerId + ": " + err.message, "error");
+          announce("Failed to drain worker " + workerId + ": " + err.message, true);
           btn.disabled = false;
         }
       }
@@ -606,6 +627,7 @@
           btn.className = "danger";
           btn.textContent = w.draining ? "Draining" : "Drain";
           btn.disabled = Boolean(w.draining);
+          btn.setAttribute("aria-label", (w.draining ? "Draining worker " : "Drain worker ") + w.worker_id);
           btn.addEventListener("click", function () { drainWorker(w.worker_id, btn); });
           actTd.appendChild(btn);
           tr.appendChild(actTd);
@@ -620,10 +642,10 @@
             method: "POST"
           });
           const runId = res && res.requeued_run_id ? " (new run: " + res.requeued_run_id + ")" : "";
-          showBanner("Requeued dead-letter #" + id + runId, "info");
+          announce("Requeued dead-letter #" + id + runId, false);
           await refreshAll();
         } catch (err) {
-          showBanner("Failed to requeue DLQ #" + id + ": " + err.message, "error");
+          announce("Failed to requeue DLQ #" + id + ": " + err.message, true);
           btn.disabled = false;
         }
       }
@@ -654,6 +676,7 @@
           btn.className = "primary";
           btn.textContent = e.requeued ? "Requeued" : "Requeue";
           btn.disabled = Boolean(e.requeued);
+          btn.setAttribute("aria-label", (e.requeued ? "Requeued dead-letter " : "Requeue dead-letter ") + e.id);
           btn.addEventListener("click", function () { requeueDLQ(e.id, btn); });
           actTd.appendChild(btn);
           tr.appendChild(actTd);
@@ -666,7 +689,7 @@
         const tbody = document.getElementById("artifacts-body");
         const count = document.getElementById("artifacts-count");
         if (!runId) {
-          showBanner("Enter a Run ID to list artifacts.", "error");
+          announce("Enter a Run ID to list artifacts.", true);
           return;
         }
         loadArtifactsBtn.disabled = true;
@@ -676,6 +699,7 @@
           count.textContent = String(artifacts.length);
           if (artifacts.length === 0) {
             emptyRow(tbody, 6, "No artifacts recorded for run " + runId + ".");
+            announce("No artifacts recorded for run " + runId + ".", false);
             return;
           }
           tbody.textContent = "";
@@ -694,6 +718,7 @@
               a.href = "/v1/runs/" + encodeURIComponent(runId) + "/tasks/" + encodeURIComponent(art.task_id) + "/artifacts/" + encodeURIComponent(art.name);
               a.download = art.name;
               a.textContent = "Download";
+              a.setAttribute("aria-label", "Download artifact " + art.name);
               dlTd.appendChild(a);
             } else {
               dlTd.textContent = "-";
@@ -701,8 +726,9 @@
             tr.appendChild(dlTd);
             tbody.appendChild(tr);
           }
+          announce("Loaded " + artifacts.length + " artifact(s) for run " + runId + ".", false);
         } catch (err) {
-          showBanner("Failed to load artifacts for " + runId + ": " + err.message, "error");
+          announce("Failed to load artifacts for " + runId + ": " + err.message, true);
         } finally {
           loadArtifactsBtn.disabled = false;
         }
@@ -712,7 +738,7 @@
         const runId = approvalRunInput.value.trim();
         const taskId = approvalTaskInput.value.trim();
         if (!runId || !taskId) {
-          showBanner("Run ID and Task ID are required for approval.", "error");
+          announce("Run ID and Task ID are required for approval.", true);
           return;
         }
         const payload = { approved: Boolean(approved) };
@@ -734,10 +760,10 @@
           );
           const actionLabel = approved ? "Approved" : "Rejected";
           const statusNote = res && res.task_status ? " (status: " + res.task_status + ")" : "";
-          showBanner(actionLabel + " task " + taskId + " on run " + runId + statusNote, "info");
+          announce(actionLabel + " task " + taskId + " on run " + runId + statusNote, false);
           await refreshAll();
         } catch (err) {
-          showBanner("Failed to " + (approved ? "approve" : "reject") + " task " + taskId + ": " + err.message, "error");
+          announce("Failed to " + (approved ? "approve" : "reject") + " task " + taskId + ": " + err.message, true);
         } finally {
           approveBtn.disabled = false;
           rejectBtn.disabled = false;
@@ -754,8 +780,10 @@
           }
         }
         if (errors.length > 0) {
-          showBanner("API error: " + errors[0], "error");
+          announce("API error: " + errors[0], true);
+          return false;
         }
+        return true;
       }
 
       saveTokenBtn.addEventListener("click", function () {
@@ -771,7 +799,7 @@
         } else {
           localStorage.removeItem(TENANT_KEY);
         }
-        showBanner(tokVal || tenantVal ? "Auth settings saved to localStorage." : "Auth settings cleared.", "info");
+        announce(tokVal || tenantVal ? "Auth settings saved to localStorage." : "Auth settings cleared.", false);
         refreshAll();
       });
 
@@ -801,9 +829,12 @@
         });
       }
 
-      refreshBtn.addEventListener("click", function () {
-        showBanner("", "info");
-        refreshAll();
+      refreshBtn.addEventListener("click", async function () {
+        announce("", false);
+        const ok = await refreshAll();
+        if (ok) {
+          announce("Dashboard refreshed.", false);
+        }
       });
 
       refreshAll();

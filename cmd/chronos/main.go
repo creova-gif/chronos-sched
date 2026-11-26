@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -138,7 +139,7 @@ func printUsage() {
 Usage:
   chronos init [--dir .chronos]
   chronos demo [--workers 5] [--workflow path.yaml] [--headless]
-  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec] [--rate-limit-rps N] [--rate-limit-burst N] [--max-active-runs-per-tenant N]
+  chronos server start [--addr 127.0.0.1:7420] [--db .chronos/chronos.db] [--ha-id node-1] [--ha-ttl 5s] [--auth-token tok] [--webhook-url url] [--webhook-secret sec] [--rate-limit-rps N] [--rate-limit-burst N] [--max-active-runs-per-tenant N] [--log-level info]
   chronos worker start [--coordinator http://127.0.0.1:7420] [--auth-token tok] [--concurrency 8] [--worker-id id] [--resources cpu=4,mem_mb=1024]
   chronos worker list [--coordinator http://127.0.0.1:7420]
   chronos worker drain <worker_id> [--coordinator http://127.0.0.1:7420]
@@ -429,6 +430,19 @@ func cmdDemo(args []string) error {
 	return nil
 }
 
+func parseSlogLevel(raw string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func cmdServerStart(args []string) error {
 	fs := flag.NewFlagSet("server start", flag.ContinueOnError)
 	addr := fs.String("addr", defaultCoordAddr, "HTTP listen address")
@@ -441,6 +455,7 @@ func cmdServerStart(args []string) error {
 	rateRPS := fs.Float64("rate-limit-rps", 0, "optional per-tenant API rate limit in requests/sec (0 = disabled)")
 	rateBurst := fs.Int("rate-limit-burst", 0, "optional per-tenant API rate limit burst capacity")
 	maxActiveRuns := fs.Int("max-active-runs-per-tenant", 0, "optional per-tenant active run quota (0 = unlimited)")
+	logLevel := fs.String("log-level", "info", "structured JSON log level (debug, info, warn, error)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -478,6 +493,7 @@ func cmdServerStart(args []string) error {
 			Webhook:                notifier,
 			RateLimit:              runtime.RateLimitConfig{RequestsPerSecond: *rateRPS, Burst: *rateBurst},
 			MaxActiveRunsPerTenant: *maxActiveRuns,
+			Logger:                 slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: parseSlogLevel(*logLevel)})),
 		})
 		if err := coord.Recover(runCtx); err != nil {
 			return fmt.Errorf("recover coordinator state: %w", err)
@@ -1393,8 +1409,15 @@ func cmdGC(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("GC dry_run=%v candidates=%d deleted_runs=%d deleted_events=%d skipped_lineage_parents=%d vacuumed=%v\n",
-		*dryRun, len(rep.CandidateRunIDs), rep.DeletedRuns, rep.DeletedEvents, len(rep.SkippedLineageParents), rep.Vacuumed)
+	var prunedIdem int64
+	if !*dryRun {
+		prunedIdem, err = st.PruneIdempotencyKeys(context.Background(), cutoffNs)
+		if err != nil {
+			return err
+		}
+	}
+	fmt.Printf("GC dry_run=%v candidates=%d deleted_runs=%d deleted_events=%d skipped_lineage_parents=%d vacuumed=%v pruned_idempotency_keys=%d\n",
+		*dryRun, len(rep.CandidateRunIDs), rep.DeletedRuns, rep.DeletedEvents, len(rep.SkippedLineageParents), rep.Vacuumed, prunedIdem)
 	return nil
 }
 
