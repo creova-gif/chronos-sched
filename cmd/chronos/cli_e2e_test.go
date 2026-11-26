@@ -170,6 +170,14 @@ tasks:
 		t.Fatalf("unexpected artifacts get output: got %q, want %q", getArtOut, reportContent)
 	}
 
+	// Cross-tenant isolation via CHRONOS_TENANT env var while live server is running.
+	tenantCmd := exec.Command(binPath, "artifacts", "list", "run_cli_1", "--coordinator", coordURL)
+	tenantCmd.Dir = dir
+	tenantCmd.Env = append(os.Environ(), "CHRONOS_TENANT=e2e-tenant")
+	if tenantOut, err := tenantCmd.CombinedOutput(); err == nil || !strings.Contains(string(tenantOut), "404") {
+		t.Fatalf("expected non-zero 404 for cross-tenant artifacts list, err=%v out=%s", err, string(tenantOut))
+	}
+
 	// 5. Stop server & worker, then run offline SQLite CLI commands: history, replay, diff, branches.
 	_ = workerCmd.Process.Kill()
 	_, _ = workerCmd.Process.Wait()

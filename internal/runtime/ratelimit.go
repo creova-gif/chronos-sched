@@ -16,6 +16,8 @@ const (
 type RateLimitConfig struct {
 	RequestsPerSecond float64
 	Burst             int
+	// OnLimited is an optional callback invoked when a request is rejected with HTTP 429.
+	OnLimited func()
 }
 
 type tokenBucket struct {
@@ -139,6 +141,9 @@ func RateLimitMiddleware(cfg RateLimitConfig, next http.Handler) http.Handler {
 
 		if !allowed {
 			w.Header().Set("Retry-After", "1")
+			if cfg.OnLimited != nil {
+				cfg.OnLimited()
+			}
 			writeJSON(w, http.StatusTooManyRequests, ErrorResponse{Error: "rate limit exceeded"})
 			return
 		}

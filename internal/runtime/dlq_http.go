@@ -34,6 +34,17 @@ func (c *Coordinator) handleListDeadLetters(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
+	if ts, ok := c.store.(store.TenantStore); ok {
+		tenant := TenantFromContext(r.Context())
+		filtered := make([]store.DeadLetterEntry, 0, len(entries))
+		for _, entry := range entries {
+			owner, err := ts.GetRunTenant(r.Context(), entry.RunID)
+			if err == nil && owner == tenant {
+				filtered = append(filtered, entry)
+			}
+		}
+		entries = filtered
+	}
 	if entries == nil {
 		entries = []store.DeadLetterEntry{}
 	}
@@ -71,6 +82,9 @@ func (c *Coordinator) handleRequeueDeadLetter(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: fmt.Sprintf("dead-letter entry %d not found", id)})
 		return
 	}
+	if !c.authorizeRunTenant(w, r, target.RunID) {
+		return
+	}
 	if target.Requeued {
 		writeJSON(w, http.StatusConflict, ErrorResponse{Error: "dead-letter entry already requeued"})
 		return
@@ -89,6 +103,7 @@ func (c *Coordinator) handleRequeueDeadLetter(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 		return
 	}
+	c.assignRunTenant(r.Context(), subResp.RunID)
 
 	if err := dlq.MarkDeadLetterRequeued(r.Context(), target.ID, subResp.RunID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
