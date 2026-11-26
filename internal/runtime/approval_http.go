@@ -94,6 +94,13 @@ func (c *Coordinator) handleTaskApproval(
 	taskStatus := ar.state.Tasks[taskID].Status
 	c.mu.Unlock()
 
+	switch ev.Type {
+	case engine.EventTaskApproved:
+		c.auditLog(r.Context(), "task_approval", "approved", TenantFromContext(r.Context()), id, req.Actor, fmt.Sprintf("task_id=%s", taskID))
+	case engine.EventTaskRejected:
+		c.auditLog(r.Context(), "task_approval", "rejected", TenantFromContext(r.Context()), id, req.Actor, fmt.Sprintf("task_id=%s", taskID))
+	}
+
 	c.broadcast(id, []engine.Event{ev}, runStatus)
 	writeJSON(w, http.StatusOK, ApprovalResponse{
 		RunID:      id,

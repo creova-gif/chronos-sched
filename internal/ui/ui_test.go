@@ -37,6 +37,8 @@ func TestHandlerServesEmbeddedUI(t *testing.T) {
 			"main-content",
 			`aria-live="polite"`,
 			":focus-visible",
+			"run-status-filter",
+			"aria-busy",
 		} {
 			if !strings.Contains(body, want) {
 				t.Fatalf("GET %s body does not contain %q", path, want)

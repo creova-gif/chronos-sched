@@ -110,6 +110,16 @@ func (c *Coordinator) handleRequeueDeadLetter(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	c.auditLog(
+		r.Context(),
+		"dlq_requeue",
+		"requeued",
+		TenantFromContext(r.Context()),
+		subResp.RunID,
+		"",
+		fmt.Sprintf("dead_letter_id=%d source_run_id=%s", target.ID, target.RunID),
+	)
+
 	writeJSON(w, http.StatusCreated, RequeueDeadLetterResponse{
 		DeadLetterID:  target.ID,
 		RequeuedRunID: subResp.RunID,

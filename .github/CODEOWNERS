@@ -1,0 +1,11 @@
+# Default owner for all files in the repository
+* @creova-gif
+
+# Core scheduling engine, storage, and runtime
+/internal/engine/ @creova-gif
+/internal/store/ @creova-gif
+/internal/runtime/ @creova-gif
+
+# CI/CD, governance, and architecture decision records
+/.github/ @creova-gif
+/docs/adr/ @creova-gif

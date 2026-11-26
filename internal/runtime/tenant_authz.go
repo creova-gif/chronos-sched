@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/creova-gif/chronos-sched/internal/store"
@@ -13,8 +14,10 @@ import (
 func (c *Coordinator) authorizeRunTenant(w http.ResponseWriter, r *http.Request, runID string) bool {
 	if ts, ok := c.store.(store.TenantStore); ok {
 		owner, err := ts.GetRunTenant(r.Context(), runID)
-		if err == nil && owner != TenantFromContext(r.Context()) {
+		tenantID := TenantFromContext(r.Context())
+		if err == nil && owner != tenantID {
 			c.metrics.IncTenantDenied()
+			c.auditLog(r.Context(), "tenant_access", "denied", tenantID, runID, "", fmt.Sprintf("owner=%s", owner))
 			writeJSON(w, http.StatusNotFound, ErrorResponse{Error: store.ErrRunNotFound.Error()})
 			return false
 		}
