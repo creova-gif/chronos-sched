@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/creova-gif/chronos-sched/internal/store"
 )
@@ -140,7 +142,26 @@ func (c *Coordinator) handleGetArtifact(w http.ResponseWriter, r *http.Request) 
 	if art.ContentType != "" {
 		w.Header().Set("Content-Type", art.ContentType)
 	}
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", safeAttachmentFilename(art.Name)))
+	w.Header().Set("Cache-Control", "private, no-store")
 	w.Header().Set("ETag", fmt.Sprintf("%q", art.SHA256))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(art.Data)
+}
+
+func safeAttachmentFilename(name string) string {
+	base := filepath.Base(name)
+	var b strings.Builder
+	b.Grow(len(base))
+	for _, r := range base {
+		if r == '"' || r == '\\' || r == '/' || r == ';' || r == '\r' || r == '\n' || unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	cleaned := b.String()
+	if cleaned == "" || cleaned == "." || cleaned == ".." {
+		return "artifact"
+	}
+	return cleaned
 }

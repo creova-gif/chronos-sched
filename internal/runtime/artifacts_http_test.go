@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 
@@ -145,5 +146,58 @@ func TestArtifactsHTTP_PutListGetAndSizeLimit(t *testing.T) {
 	})
 	if oversizedRec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("POST oversized status: got %d, want %d (%s)", oversizedRec.Code, http.StatusRequestEntityTooLarge, oversizedRec.Body.String())
+	}
+}
+
+func TestArtifactDownloadSecurityHeaders(t *testing.T) {
+	mux := newArtifactsHTTPTestMux(t)
+
+	cases := []struct {
+		name         string
+		artifactName string
+		wantHeader   string
+	}{
+		{
+			name:         "standard filename",
+			artifactName: "report.bin",
+			wantHeader:   `attachment; filename="report.bin"`,
+		},
+		{
+			name:         "quotes semicolons backslashes and path components",
+			artifactName: `../../dir/bad";name\test.txt`,
+			wantHeader:   `attachment; filename="badnametest.txt"`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			putRec := doArtifactJSONRequest(t, mux, http.MethodPost, "/v1/runs/run-sec/tasks/t1/artifacts", PutArtifactRequest{
+				Name:        tc.artifactName,
+				ContentType: "application/octet-stream",
+				DataBase64:  base64.StdEncoding.EncodeToString([]byte("payload")),
+			})
+			if putRec.Code != http.StatusCreated {
+				t.Fatalf("POST artifact status: got %d, want %d (%s)", putRec.Code, http.StatusCreated, putRec.Body.String())
+			}
+
+			target := "/v1/runs/run-sec/tasks/t1/artifacts/" + url.PathEscape(tc.artifactName)
+			getRec := doArtifactJSONRequest(t, mux, http.MethodGet, target, nil)
+			if getRec.Code != http.StatusOK {
+				t.Fatalf("GET artifact status: got %d, want %d (%s)", getRec.Code, http.StatusOK, getRec.Body.String())
+			}
+			if gotCD := getRec.Header().Get("Content-Disposition"); gotCD != tc.wantHeader {
+				t.Fatalf("Content-Disposition: got %q, want %q", gotCD, tc.wantHeader)
+			}
+			if gotCC := getRec.Header().Get("Cache-Control"); gotCC != "private, no-store" {
+				t.Fatalf("Cache-Control: got %q, want %q", gotCC, "private, no-store")
+			}
+		})
+	}
+
+	if got := safeAttachmentFilename(".."); got != "artifact" {
+		t.Fatalf("safeAttachmentFilename(\"..\"): got %q, want %q", got, "artifact")
+	}
+	if got := safeAttachmentFilename("a\r\n\x00;\"\\b.txt"); got != "ab.txt" {
+		t.Fatalf("safeAttachmentFilename control chars: got %q, want %q", got, "ab.txt")
 	}
 }

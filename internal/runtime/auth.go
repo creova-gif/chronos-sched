@@ -21,6 +21,15 @@ func AuthMiddleware(token string, next http.Handler) http.Handler {
 // entry via logger when a request is denied. When token is empty, it returns
 // next unchanged. GET /healthz, GET /ui, and GET /ui/ are always exempt.
 func AuthMiddlewareWithAudit(token string, logger *slog.Logger, next http.Handler) http.Handler {
+	return AuthMiddlewareWithAuditAndMetrics(token, logger, nil, next)
+}
+
+// AuthMiddlewareWithAuditAndMetrics enforces optional constant-time Bearer token
+// authentication on Coordinator HTTP routes, emits a security audit log entry
+// via logger, and invokes onDenied (if non-nil) when a request is denied. When
+// token is empty, it returns next unchanged. GET /healthz, GET /ui, and GET /ui/
+// are always exempt.
+func AuthMiddlewareWithAuditAndMetrics(token string, logger *slog.Logger, onDenied func(), next http.Handler) http.Handler {
 	if token == "" {
 		return next
 	}
@@ -32,6 +41,9 @@ func AuthMiddlewareWithAudit(token string, logger *slog.Logger, next http.Handle
 		}
 		got, ok := strings.CutPrefix(r.Header.Get("Authorization"), bearerPrefix)
 		if !ok || subtle.ConstantTimeCompare([]byte(got), expected) != 1 {
+			if onDenied != nil {
+				onDenied()
+			}
 			logSecurityAudit(r.Context(), logger, "auth_bearer", "denied", TenantFromContext(r.Context()), "", "", r.Method+" "+r.URL.Path)
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, ErrorResponse{Error: "unauthorized"})

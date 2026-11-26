@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Auth Denial Prometheus Metric (`internal/metrics`, `internal/runtime`):** Added `chronos_auth_denied_total` Prometheus counter wired into `AuthMiddlewareWithAuditAndMetrics` and `Coordinator.Handler()`.
+- **Artifact Download Defense-in-Depth Headers (`internal/runtime`):** Added `Content-Disposition: attachment` and `Cache-Control: private, no-store` headers on binary artifact downloads.
+- **Dependabot Automation (`.github/dependabot.yml`):** Configured weekly Dependabot updates for `gomod` and `github-actions`.
 - **SDK Run Polling (`pkg/chronos`):** Added `(*Client).WaitForRun(ctx, runID, pollInterval)` polling helper.
 - **Webhook SSRF & Redirect Protection (`internal/runtime`):** Added `WebhookConfig.BlockPrivateIPs`, `WebhookConfig.AllowRedirects`, and `--webhook-block-private-ips` CLI flag.
 - **Middleware Ordering (`internal/runtime`):** Enforced auth-before-rate-limit middleware ordering in `Coordinator.Handler()`.
