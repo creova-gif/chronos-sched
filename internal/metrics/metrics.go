@@ -32,15 +32,17 @@ var latencyBuckets = [...]latencyBucket{
 // standard library and renders them in Prometheus text exposition format 0.0.4.
 // The zero value is ready for use.
 type Recorder struct {
-	runsSubmitted      atomic.Uint64
-	tasksLeased        atomic.Uint64
-	tasksCompleted     atomic.Uint64
-	tasksFailed        atomic.Uint64
-	leasesExpired      atomic.Uint64
-	ambiguousOutcomes  atomic.Uint64
-	staleFencingTokens atomic.Uint64
-	timelinesForked    atomic.Uint64
-	timelinesMerged    atomic.Uint64
+	runsSubmitted       atomic.Uint64
+	tasksLeased         atomic.Uint64
+	tasksCompleted      atomic.Uint64
+	tasksFailed         atomic.Uint64
+	leasesExpired       atomic.Uint64
+	ambiguousOutcomes   atomic.Uint64
+	staleFencingTokens  atomic.Uint64
+	timelinesForked     atomic.Uint64
+	timelinesMerged     atomic.Uint64
+	deadLettersRecorded atomic.Int64
+	workersDrained      atomic.Int64
 
 	histMu              sync.RWMutex
 	latencyBucketCounts [len(latencyBuckets)]uint64
@@ -125,6 +127,22 @@ func (r *Recorder) IncTimelinesMerged() {
 	r.timelinesMerged.Add(1)
 }
 
+// IncDeadLettersRecorded increments chronos_dead_letters_recorded_total.
+func (r *Recorder) IncDeadLettersRecorded() {
+	if r == nil {
+		return
+	}
+	r.deadLettersRecorded.Add(1)
+}
+
+// IncWorkersDrained increments chronos_workers_drained_total.
+func (r *Recorder) IncWorkersDrained() {
+	if r == nil {
+		return
+	}
+	r.workersDrained.Add(1)
+}
+
 // ObserveScheduleLatency records a scheduling decision duration into the
 // chronos_schedule_latency_ms histogram. Negative durations are clamped to 0.
 func (r *Recorder) ObserveScheduleLatency(d time.Duration) {
@@ -165,6 +183,8 @@ func (r *Recorder) RenderPrometheus() string {
 	writeCounter(&sb, "chronos_stale_fencing_tokens_total", "Total number of worker reports rejected due to stale fencing tokens.", r.staleFencingTokens.Load())
 	writeCounter(&sb, "chronos_timelines_forked_total", "Total number of timelines forked.", r.timelinesForked.Load())
 	writeCounter(&sb, "chronos_timelines_merged_total", "Total number of timelines merged.", r.timelinesMerged.Load())
+	writeCounter(&sb, "chronos_dead_letters_recorded_total", "Total number of dead-lettered tasks recorded.", uint64(r.deadLettersRecorded.Load()))
+	writeCounter(&sb, "chronos_workers_drained_total", "Total number of workers drained.", uint64(r.workersDrained.Load()))
 
 	r.histMu.RLock()
 	bucketCounts := r.latencyBucketCounts

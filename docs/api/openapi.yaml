@@ -414,6 +414,36 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /v1/workers/drain:
+    post:
+      summary: Drain a worker so it stops receiving new task leases
+      operationId: drainWorker
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkerDrainRequest"
+      responses:
+        "200":
+          description: Worker marked as draining
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkerDrainResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Worker not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /v1/tasks/started:
     post:
       summary: Mark a leased task as started
@@ -1177,3 +1207,21 @@ components:
           format: int64
         error:
           type: string
+
+    WorkerDrainRequest:
+      type: object
+      required: [worker_id]
+      properties:
+        worker_id:
+          type: string
+
+    WorkerDrainResponse:
+      type: object
+      required: [worker_id, draining, in_flight_tasks]
+      properties:
+        worker_id:
+          type: string
+        draining:
+          type: boolean
+        in_flight_tasks:
+          type: integer
