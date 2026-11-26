@@ -54,6 +54,19 @@ paths:
               schema:
                 type: string
 
+  /ui/:
+    get:
+      summary: Embedded Web UI
+      operationId: getUI
+      security: []
+      responses:
+        "200":
+          description: Single-page web dashboard HTML
+          content:
+            text/html:
+              schema:
+                type: string
+
   /v1/workflows/run:
     post:
       summary: Submit a workflow run
@@ -325,6 +338,124 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/artifacts:
+    get:
+      summary: List artifacts for a workflow run
+      operationId: listRunArtifacts
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+      responses:
+        "200":
+          description: List of artifact metadata records for the run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListArtifactsResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/tasks/{task_id}/artifacts:
+    post:
+      summary: Upload a task artifact
+      operationId: putArtifact
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/TaskID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PutArtifactRequest"
+      responses:
+        "201":
+          description: Artifact stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArtifactRecord"
+        "400":
+          description: Invalid request or base64 payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Run or task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "413":
+          description: Artifact payload exceeds maximum allowed size
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/runs/{id}/tasks/{task_id}/artifacts/{name}:
+    get:
+      summary: Download a task artifact
+      operationId: getArtifact
+      parameters:
+        - $ref: "#/components/parameters/RunID"
+        - $ref: "#/components/parameters/TaskID"
+        - $ref: "#/components/parameters/ArtifactName"
+      responses:
+        "200":
+          description: Raw artifact bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Artifact not found
           content:
             application/json:
               schema:
@@ -685,6 +816,20 @@ components:
       in: path
       required: true
       description: Unique identifier of the workflow run
+      schema:
+        type: string
+    TaskID:
+      name: task_id
+      in: path
+      required: true
+      description: Unique identifier of the task within the run
+      schema:
+        type: string
+    ArtifactName:
+      name: name
+      in: path
+      required: true
+      description: Name of the task artifact
       schema:
         type: string
     DeadLetterID:
@@ -1260,3 +1405,49 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/WorkerInfo"
+
+    PutArtifactRequest:
+      type: object
+      required: [name, data]
+      properties:
+        name:
+          type: string
+        content_type:
+          type: string
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded artifact payload
+
+    ArtifactRecord:
+      type: object
+      required: [id, run_id, task_id, name, content_type, sha256, size_bytes, created_at_ns]
+      properties:
+        id:
+          type: integer
+          format: int64
+        run_id:
+          type: string
+        task_id:
+          type: string
+        name:
+          type: string
+        content_type:
+          type: string
+        sha256:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at_ns:
+          type: integer
+          format: int64
+
+    ListArtifactsResponse:
+      type: object
+      required: [artifacts]
+      properties:
+        artifacts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ArtifactRecord"
